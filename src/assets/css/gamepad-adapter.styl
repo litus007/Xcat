@@ -1,0 +1,76 @@
+.bx-gamepad-wizard-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.75);
+    z-index: var(--bx-key-binding-dialog-overlay-z-index);
+}
+
+.bx-gamepad-wizard {
+    position: fixed;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: min(92vw, 520px);
+    box-sizing: border-box;
+    padding: 20px;
+    background: #1a1b1e;
+    color: #fff;
+    border-radius: 12px;
+    z-index: var(--bx-key-binding-dialog-z-index);
+    font-family: var(--bx-normal-font);
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    text-align: center;
+
+    h2 {
+        margin: 0;
+        font-size: 20px;
+    }
+
+    .bx-gamepad-wizard-name {
+        font-size: 13px;
+        opacity: 0.7;
+        word-break: break-word;
+    }
+
+    .bx-gamepad-wizard-prompt {
+        font-size: 26px;
+        font-weight: bold;
+        padding: 18px 0;
+        border-radius: 8px;
+        background: #2a2b30;
+    }
+
+    .bx-gamepad-wizard-hint {
+        font-size: 13px;
+        opacity: 0.8;
+    }
+
+    .bx-gamepad-wizard-progress {
+        height: 6px;
+        border-radius: 3px;
+        background: #3a3b40;
+        overflow: hidden;
+
+        > div {
+            height: 100%;
+            width: 0;
+            background: #107c10;
+            transition: width 0.15s ease-out;
+        }
+    }
+
+    .bx-gamepad-wizard-input {
+        min-height: 20px;
+        font-size: 14px;
+        color: #7bd67b;
+    }
+
+    .bx-gamepad-wizard-buttons {
+        display: flex;
+        gap: 8px;
+        justify-content: center;
+        flex-wrap: wrap;
+    }
+}

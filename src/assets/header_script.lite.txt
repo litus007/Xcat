@@ -1,0 +1,12 @@
+// ==UserScript==
+// @name         xCloud Català (Lite)
+// @namespace    xcloud-catala
+// @version      [[VERSION]]
+// @description  Millora l'experiència d'Xbox Cloud Gaming (xCloud) en català
+// @license      MIT
+// @match        https://www.xbox.com/*/play*
+// @match        https://www.xbox.com/*/auth/msa?*loggedIn*
+// @run-at       document-end
+// @grant        none
+// ==/UserScript==
+"use strict";

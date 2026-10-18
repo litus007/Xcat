@@ -1,0 +1,5 @@
+// ==UserScript==
+// @name         xCloud Català
+// @namespace    xcloud-catala
+// @version      [[VERSION]]
+// ==/UserScript==

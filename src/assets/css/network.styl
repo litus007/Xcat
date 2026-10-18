@@ -1,0 +1,29 @@
+.bx-net-pill {
+    position: fixed;
+    top: calc(14px + env(safe-area-inset-top));
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: var(--bx-toast-z-index);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 14px;
+    border-radius: 999px;
+    background: rgba(20, 20, 20, 0.88);
+    border: 1px solid rgba(255, 255, 255, 0.5);
+    color: #fff;
+    font: 13px var(--bx-normal-font, sans-serif);
+    box-shadow: 0 0 6px #000;
+    pointer-events: none;
+
+    .bx-net-pill-btn {
+        pointer-events: auto;
+        border: 0;
+        border-radius: 999px;
+        padding: 3px 10px;
+        font: inherit;
+        background: #c0392b;
+        color: #fff;
+        cursor: pointer;
+    }
+}

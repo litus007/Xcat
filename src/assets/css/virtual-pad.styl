@@ -1,0 +1,88 @@
+.bx-vpad {
+    --bx-vpad-unit: calc(var(--bx-vpad-scale, 1) * 1vmin);
+    position: fixed;
+    inset: 0;
+    z-index: 1200;
+    pointer-events: none;
+    opacity: var(--bx-vpad-opacity, 0.7);
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+
+    > * {
+        pointer-events: auto;
+        touch-action: none;
+        position: absolute;
+        box-sizing: border-box;
+    }
+
+    .bx-vpad-btn {
+        --s: calc(var(--bx-vpad-unit) * 11);
+        width: var(--s);
+        height: var(--s);
+        border-radius: 50%;
+        background: rgba(30, 30, 30, 0.55);
+        border: 2px solid rgba(255, 255, 255, 0.8);
+        color: #fff;
+        font: bold calc(var(--s) * 0.4) var(--bx-normal-font, sans-serif);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+
+        &.bx-pressed {
+            background: rgba(255, 255, 255, 0.55);
+            color: #000;
+        }
+    }
+
+    // Botons de cara (rombe)
+    .bx-vpad-a { right: calc(var(--bx-vpad-unit) * 14); bottom: calc(var(--bx-vpad-unit) * 4); }
+    .bx-vpad-b { right: calc(var(--bx-vpad-unit) * 4); bottom: calc(var(--bx-vpad-unit) * 14); }
+    .bx-vpad-x { right: calc(var(--bx-vpad-unit) * 24); bottom: calc(var(--bx-vpad-unit) * 14); }
+    .bx-vpad-y { right: calc(var(--bx-vpad-unit) * 14); bottom: calc(var(--bx-vpad-unit) * 24); }
+
+    // Creueta
+    .bx-vpad-up { left: calc(var(--bx-vpad-unit) * 15); bottom: calc(var(--bx-vpad-unit) * 25); border-radius: 12px; }
+    .bx-vpad-down { left: calc(var(--bx-vpad-unit) * 15); bottom: calc(var(--bx-vpad-unit) * 3); border-radius: 12px; }
+    .bx-vpad-left { left: calc(var(--bx-vpad-unit) * 4); bottom: calc(var(--bx-vpad-unit) * 14); border-radius: 12px; }
+    .bx-vpad-right { left: calc(var(--bx-vpad-unit) * 26); bottom: calc(var(--bx-vpad-unit) * 14); border-radius: 12px; }
+
+    // Gallets i botons laterals
+    .bx-vpad-lt { left: calc(var(--bx-vpad-unit) * 3); top: calc(var(--bx-vpad-unit) * 3); border-radius: 14px; width: calc(var(--bx-vpad-unit) * 14); }
+    .bx-vpad-lb { left: calc(var(--bx-vpad-unit) * 19); top: calc(var(--bx-vpad-unit) * 3); border-radius: 14px; width: calc(var(--bx-vpad-unit) * 14); }
+    .bx-vpad-rt { right: calc(var(--bx-vpad-unit) * 3); top: calc(var(--bx-vpad-unit) * 3); border-radius: 14px; width: calc(var(--bx-vpad-unit) * 14); }
+    .bx-vpad-rb { right: calc(var(--bx-vpad-unit) * 19); top: calc(var(--bx-vpad-unit) * 3); border-radius: 14px; width: calc(var(--bx-vpad-unit) * 14); }
+
+    // Centre
+    .bx-vpad-select, .bx-vpad-start, .bx-vpad-home {
+        --s: calc(var(--bx-vpad-unit) * 8);
+        top: calc(var(--bx-vpad-unit) * 3);
+    }
+    .bx-vpad-select { left: calc(50% - var(--bx-vpad-unit) * 13); }
+    .bx-vpad-home { left: calc(50% - var(--bx-vpad-unit) * 4); }
+    .bx-vpad-start { left: calc(50% + var(--bx-vpad-unit) * 5); }
+
+    // Palanques
+    .bx-vpad-stick {
+        --s: calc(var(--bx-vpad-unit) * 22);
+        width: var(--s);
+        height: var(--s);
+        border-radius: 50%;
+        background: rgba(30, 30, 30, 0.4);
+        border: 2px solid rgba(255, 255, 255, 0.6);
+
+        .bx-vpad-thumb {
+            position: absolute;
+            left: 25%;
+            top: 25%;
+            width: 50%;
+            height: 50%;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.7);
+            pointer-events: none;
+        }
+    }
+    .bx-vpad-stick-left { left: calc(var(--bx-vpad-unit) * 40); bottom: calc(var(--bx-vpad-unit) * 4); }
+    .bx-vpad-stick-right { right: calc(var(--bx-vpad-unit) * 40); bottom: calc(var(--bx-vpad-unit) * 4); }
+}

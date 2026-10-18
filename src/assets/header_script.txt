@@ -1,0 +1,13 @@
+// ==UserScript==
+// @name         xCloud Català
+// @namespace    xcloud-catala
+// @version      [[VERSION]]
+// @description  Millora l'experiència d'Xbox Cloud Gaming (xCloud) en català, amb adaptador per utilitzar qualsevol mando
+// @license      MIT
+// @match        https://www.xbox.com/*/play*
+// @match        https://www.xbox.com/*/auth/msa?*loggedIn*
+// @exclude      https://www.xbox.com/*/xbox-game-pass/play-day-one
+// @run-at       document-start
+// @grant        none
+// ==/UserScript==
+"use strict";
