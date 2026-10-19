@@ -7,6 +7,9 @@ import { Toast } from "@utils/toast";
 import { t } from "@utils/translation";
 
 export type NetworkKind = 'wifi' | 'mobile';
+export type GameProfileMode = 'auto' | 'wifi' | 'mobile' | 'off';
+
+const GAME_PROFILES_KEY = 'BetterXcloud.NetworkGameProfiles';
 
 /**
  * Perfils de qualitat per tipus de xarxa.
@@ -17,9 +20,51 @@ export class NetworkProfiles {
     private static readonly LOG_TAG = 'NetworkProfiles';
     private static current: NetworkKind | null = null;
     private static details = '';
+    private static applying = false;
+    private static lastPath = '';
+
+    /** Identificador del joc segons la URL de la partida: /play/launch/<slug>/<productId> */
+    static getCurrentProductId(): string | null {
+        const m = window.location.pathname.match(/\/launch\/[^/]+\/([^/?#]+)/);
+        return m ? m[1]! : null;
+    }
+
+    private static readGameProfiles(): Record<string, GameProfileMode> {
+        try {
+            return JSON.parse(window.localStorage.getItem(GAME_PROFILES_KEY) || '{}') || {};
+        } catch (e) {
+            return {};
+        }
+    }
+
+    static getGameProfile(productId: string): GameProfileMode {
+        return NetworkProfiles.readGameProfiles()[productId] || 'auto';
+    }
+
+    static setGameProfile(productId: string, mode: GameProfileMode) {
+        const all = NetworkProfiles.readGameProfiles();
+        if (mode === 'auto') {
+            delete all[productId];
+        } else {
+            all[productId] = mode;
+        }
+
+        try {
+            window.localStorage.setItem(GAME_PROFILES_KEY, JSON.stringify(all));
+        } catch (e) {}
+
+        NetworkProfiles.apply();
+    }
 
     static setup() {
         NetworkProfiles.apply();
+
+        // L'app és una SPA: en canviar de joc cal recalcular el perfil abans que es llegeixin els valors
+        GlobalSettingsStorage.onBeforeOverrideRead = () => {
+            if (!NetworkProfiles.applying && window.location.pathname !== NetworkProfiles.lastPath) {
+                NetworkProfiles.apply();
+            }
+        };
 
         const connection = (navigator as any).connection;
         connection?.addEventListener?.('change', () => NetworkProfiles.apply());
@@ -62,13 +107,40 @@ export class NetworkProfiles {
     }
 
     static apply() {
+        // Evita recursió: llegir les preferències passa per getSetting, que torna a cridar apply()
+        if (NetworkProfiles.applying) {
+            return;
+        }
+
+        NetworkProfiles.applying = true;
+        try {
+            NetworkProfiles.compute();
+        } finally {
+            NetworkProfiles.applying = false;
+            NetworkProfiles.lastPath = window.location.pathname;
+        }
+    }
+
+    private static compute() {
         if (!getGlobalPref(GlobalPref.NETWORK_PROFILES_ENABLED)) {
             GlobalSettingsStorage.setOverrides({});
             NetworkProfiles.current = null;
             return;
         }
 
-        const kind = NetworkProfiles.detect();
+        // Perfil assignat a aquest joc (si n'hi ha)
+        const productId = NetworkProfiles.getCurrentProductId();
+        const mode = productId ? NetworkProfiles.getGameProfile(productId) : 'auto';
+
+        let kind: NetworkKind | null;
+        if (mode === 'off') {
+            kind = null;
+        } else if (mode === 'wifi' || mode === 'mobile') {
+            kind = mode;
+        } else {
+            kind = NetworkProfiles.detect();
+        }
+
         NetworkProfiles.current = kind;
         if (!kind) {
             GlobalSettingsStorage.setOverrides({});

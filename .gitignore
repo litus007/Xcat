@@ -181,3 +181,4 @@ android/build/
 android/app/build/
 android/local.properties
 android/app/src/main/assets/xcloud-catala.user.js
+android/app/src/main/assets/relay-viewer.html

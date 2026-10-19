@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="ca">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#000000">
+<title>xCloud Català · Espectador</title>
+<style>
+:root { color-scheme: dark; --green: #107c10; }
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; height: 100%; background: #000; color: #fff; font: 16px system-ui, sans-serif; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; }
+#join { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 24px; text-align: center; background: #111; z-index: 10; }
+#join h1 { margin: 0; font-size: 22px; }
+#join input { font: 28px monospace; letter-spacing: 6px; text-align: center; width: 11ch; padding: 10px; border-radius: 10px; border: 2px solid #444; background: #1c1c1c; color: #fff; }
+#join input.name { font: 16px system-ui; letter-spacing: 0; width: 20ch; }
+button { font: inherit; padding: 10px 22px; border: 0; border-radius: 999px; background: var(--green); color: #fff; cursor: pointer; }
+button.ghost { background: rgba(40,40,40,.8); border: 1px solid #888; }
+#err { color: #ff8a80; min-height: 1.4em; }
+#status { position: fixed; left: 50%; top: calc(10px + env(safe-area-inset-top)); transform: translateX(-50%); padding: 6px 14px; border-radius: 999px; background: rgba(20,20,20,.85); border: 1px solid #777; font-size: 13px; z-index: 8; pointer-events: none; transition: opacity .4s; }
+#status.hide { opacity: 0; }
+video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+#bar { position: fixed; top: calc(10px + env(safe-area-inset-top)); right: calc(10px + env(safe-area-inset-right)); display: flex; gap: 8px; z-index: 9; transition: opacity .3s; }
+#bar.hide { opacity: 0; pointer-events: none; }
+#bar button { padding: 8px 12px; }
+#note { position: fixed; left: 12px; right: 12px; bottom: calc(10px + env(safe-area-inset-bottom)); font-size: 12px; opacity: .8; text-align: center; z-index: 8; pointer-events: none; }
+.hidden { display: none !important; }
+
+/* Mando tàctil */
+#pad { position: fixed; inset: 0; z-index: 7; pointer-events: none; opacity: .7; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+#pad > * { position: absolute; pointer-events: auto; touch-action: none; }
+.b { --s: 11vmin; width: var(--s); height: var(--s); border-radius: 50%; background: rgba(30,30,30,.55); border: 2px solid rgba(255,255,255,.8); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 4.4vmin; }
+.b.on { background: rgba(255,255,255,.55); color: #000; }
+.b.r { border-radius: 14px; width: 14vmin; }
+.b.sm { --s: 8vmin; font-size: 3.4vmin; }
+.stick { --s: 22vmin; width: var(--s); height: var(--s); border-radius: 50%; background: rgba(30,30,30,.4); border: 2px solid rgba(255,255,255,.6); }
+.stick i { position: absolute; left: 25%; top: 25%; width: 50%; height: 50%; border-radius: 50%; background: rgba(255,255,255,.7); pointer-events: none; }
+</style>
+</head>
+<body>
+
+<div id="join">
+  <h1>📺 xCloud Català · Espectador</h1>
+  <div>Escriu el PIN que apareix a la pantalla de l'amfitrió</div>
+  <input id="pin" inputmode="numeric" autocomplete="off" maxlength="8" placeholder="······" aria-label="PIN">
+  <input id="name" class="name" maxlength="24" placeholder="El teu nom (opcional)" aria-label="Nom">
+  <button id="go">Connecta</button>
+  <div id="err" role="alert"></div>
+</div>
+
+<video id="v" autoplay playsinline class="hidden"></video>
+<div id="status" class="hide"></div>
+<div id="bar" class="hidden">
+  <button class="ghost" id="bPad" title="Mostra/amaga el mando tàctil">🎮</button>
+  <button class="ghost" id="bFs" title="Pantalla completa">⛶</button>
+  <button class="ghost" id="bLeave" title="Surt">✖</button>
+</div>
+<div id="note" class="hidden"></div>
+<div id="pad" class="hidden"></div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const FRAME = 26;   // [1][17 botons u8][4 eixos i16 BE]
+let ws = null, pc = null, myId = 0, joined = false, pin = '', name = '', retry = 0, stopped = false;
+let statusTimer = 0;
+
+// ------------------------------------------------------------ Interfície
+function setStatus(text, sticky) {
+  const el = $('status');
+  el.textContent = text;
+  el.classList.remove('hide');
+  clearTimeout(statusTimer);
+  if (!sticky) statusTimer = setTimeout(() => el.classList.add('hide'), 3500);
+}
+function showJoin(msg) {
+  $('join').classList.remove('hidden');
+  $('v').classList.add('hidden'); $('bar').classList.add('hidden'); $('pad').classList.add('hidden'); $('note').classList.add('hidden');
+  $('err').textContent = msg || '';
+}
+function showViewer() {
+  $('join').classList.add('hidden');
+  $('v').classList.remove('hidden'); $('bar').classList.remove('hidden');
+  if (touchPadOn) $('pad').classList.remove('hidden');
+}
+
+// ------------------------------------------------------------ Senyalització
+function connect() {
+  stopped = false;
+  ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws?role=viewer');
+  ws.binaryType = 'arraybuffer';
+  ws.onopen = () => ws.send(JSON.stringify({ type: 'join', pin, name }));
+  ws.onmessage = e => { if (typeof e.data === 'string') onMessage(JSON.parse(e.data)); };
+  ws.onclose = () => {
+    joined = false; closePeer();
+    if (stopped) return;
+    if (myId) { setStatus('Connexió perduda. Reconnectant…', true); setTimeout(connect, Math.min(5000, 800 * ++retry)); }
+  };
+}
+
+function onMessage(m) {
+  switch (m.type) {
+    case 'joined':
+      joined = true; myId = m.id; retry = 0;
+      showViewer();
+      setStatus(m.hostOnline ? 'Connectat · esperant el vídeo…' : 'Connectat · esperant que l\'amfitrió iniciï la partida…', true);
+      checkGamepadSupport();
+      break;
+    case 'signal': onSignal(m.data); break;
+    case 'host-offline': closePeer(); setStatus('L\'amfitrió ha aturat la partida. Esperant…', true); break;
+    case 'host-online': setStatus('L\'amfitrió és de nou en línia…'); break;
+    case 'error': {
+      stopped = true; myId = 0;
+      const text = { pin: 'PIN incorrecte', locked: 'Massa intents. Torna-ho a provar d\'aquí a un minut', full: 'No hi ha més places d\'espectador', kicked: 'L\'amfitrió t\'ha expulsat' }[m.reason] || 'Error de connexió';
+      closePeer(); showJoin(text); break;
+    }
+  }
+}
+
+async function onSignal(d) {
+  try {
+    if (d.sdp) {
+      if (!pc) createPeer();
+      await pc.setRemoteDescription({ type: d.type, sdp: d.sdp });
+      if (d.type === 'offer') {
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        ws.send(JSON.stringify({ type: 'signal', data: { type: 'answer', sdp: pc.localDescription.sdp } }));
+      }
+    } else if (d.candidate !== undefined && pc) {
+      await pc.addIceCandidate(d.candidate ? d : null);
+    }
+  } catch (e) { console.warn('signal', e); }
+}
+
+function createPeer() {
+  pc = new RTCPeerConnection({ iceServers: [] });   // només xarxa local: no cal STUN
+  pc.onicecandidate = e => {
+    if (e.candidate && ws?.readyState === 1) ws.send(JSON.stringify({ type: 'signal', data: e.candidate.toJSON() }));
+  };
+  pc.ontrack = e => {
+    const v = $('v');
+    if (v.srcObject !== e.streams[0]) v.srcObject = e.streams[0];
+    try { e.receiver.jitterBufferTarget = 0; } catch (_) {}
+    v.play().then(() => setStatus('▶ Connectat')).catch(() => setStatus('Toca la pantalla per activar el so', true));
+  };
+  pc.onconnectionstatechange = () => {
+    if (pc?.connectionState === 'failed') setStatus('No es pot rebre el vídeo (xarxa o tallafoc)', true);
+  };
+}
+function closePeer() { try { pc?.close(); } catch (_) {} pc = null; $('v').srcObject = null; }
+
+$('v').addEventListener('click', () => { $('v').play().catch(() => {}); $('bar').classList.toggle('hide'); });
+
+// ------------------------------------------------------------ Entrada: mando físic, tàctil i teclat
+const touch = { b: new Array(17).fill(0), a: [0, 0, 0, 0] };
+const keys = { b: new Array(17).fill(0), a: [0, 0, 0, 0] };
+let touchPadOn = matchMedia('(pointer: coarse)').matches;
+let last = new Uint8Array(FRAME), lastSent = 0;
+
+function readPhysical() {
+  const out = { b: new Array(17).fill(0), a: [0, 0, 0, 0], found: false };
+  if (!navigator.getGamepads) return out;
+  for (const gp of navigator.getGamepads()) {
+    if (!gp || !gp.connected) continue;
+    out.found = true;
+    for (let i = 0; i < Math.min(17, gp.buttons.length); i++) out.b[i] = Math.max(out.b[i], gp.buttons[i].value || (gp.buttons[i].pressed ? 1 : 0));
+    for (let i = 0; i < 4; i++) if (Math.abs(gp.axes[i] || 0) > Math.abs(out.a[i])) out.a[i] = gp.axes[i];
+  }
+  return out;
+}
+
+function buildFrame() {
+  const p = readPhysical();
+  const f = new Uint8Array(FRAME), dv = new DataView(f.buffer);
+  f[0] = 1;
+  for (let i = 0; i < 17; i++) f[1 + i] = Math.round(Math.max(p.b[i], touch.b[i], keys.b[i]) * 255);
+  for (let i = 0; i < 4; i++) {
+    let v = [p.a[i], touch.a[i], keys.a[i]].reduce((m, x) => Math.abs(x) > Math.abs(m) ? x : m, 0);
+    if (Math.abs(v) < 0.05) v = 0;
+    dv.setInt16(18 + i * 2, Math.round(Math.max(-1, Math.min(1, v)) * 32767));
+  }
+  return f;
+}
+
+setInterval(() => {
+  if (!joined || ws?.readyState !== 1) return;
+  const f = buildFrame(), now = performance.now();
+  let changed = false;
+  for (let i = 0; i < FRAME; i++) if (f[i] !== last[i]) { changed = true; break; }
+  if (changed || now - lastSent > 250) { ws.send(f); last = f; lastSent = now; }   // canvi o "batec" cada 250 ms
+}, 8);
+
+function checkGamepadSupport() {
+  const note = $('note');
+  if (!navigator.getGamepads) {
+    note.textContent = 'Aquest navegador no permet mandos en HTTP. Usa el mando tàctil o activa el flag «Treat insecure origin as secure» (vegeu la guia).';
+    note.classList.remove('hidden'); setTimeout(() => note.classList.add('hidden'), 12000);
+  }
+}
+
+// Teclat: fletxes = palanca esquerra; Z X C V = A B X Y; Retorn = Start; Maj = Select; Q/E = LB/RB
+const KEYMAP = { KeyZ: 0, KeyX: 1, KeyC: 2, KeyV: 3, KeyQ: 4, KeyE: 5, ShiftLeft: 8, Enter: 9 };
+function keyAxes() {
+  keys.a[0] = (keys.held?.ArrowRight ? 1 : 0) - (keys.held?.ArrowLeft ? 1 : 0);
+  keys.a[1] = (keys.held?.ArrowDown ? 1 : 0) - (keys.held?.ArrowUp ? 1 : 0);
+}
+keys.held = {};
+addEventListener('keydown', e => { if (!joined) return; if (e.code in KEYMAP) keys.b[KEYMAP[e.code]] = 1; if (e.code.startsWith('Arrow')) { keys.held[e.code] = 1; keyAxes(); e.preventDefault(); } });
+addEventListener('keyup', e => { if (e.code in KEYMAP) keys.b[KEYMAP[e.code]] = 0; if (e.code.startsWith('Arrow')) { keys.held[e.code] = 0; keyAxes(); } });
+
+// Mando tàctil
+(function buildPad() {
+  const pad = $('pad');
+  const place = (cls, text, css, index, extra) => {
+    const el = document.createElement('div');
+    el.className = 'b ' + cls; el.textContent = text; Object.assign(el.style, css);
+    el.addEventListener('pointerdown', e => { e.preventDefault(); el.setPointerCapture(e.pointerId); touch.b[index] = 1; el.classList.add('on'); navigator.vibrate?.(8); });
+    const up = () => { touch.b[index] = 0; el.classList.remove('on'); };
+    el.addEventListener('pointerup', up); el.addEventListener('pointercancel', up);
+    pad.appendChild(el);
+  };
+  const u = n => `calc(${n} * 1vmin)`;
+  place('', 'A', { right: u(14), bottom: u(4) }, 0); place('', 'B', { right: u(4), bottom: u(14) }, 1);
+  place('', 'X', { right: u(24), bottom: u(14) }, 2); place('', 'Y', { right: u(14), bottom: u(24) }, 3);
+  place('r', 'LT', { left: u(3), top: u(3) }, 6); place('r', 'LB', { left: u(19), top: u(3) }, 4);
+  place('r', 'RT', { right: u(3), top: u(3) }, 7); place('r', 'RB', { right: u(19), top: u(3) }, 5);
+  place('sm', '⧉', { left: 'calc(50% - 13vmin)', top: u(3) }, 8); place('sm', '⌂', { left: 'calc(50% - 4vmin)', top: u(3) }, 16); place('sm', '☰', { left: 'calc(50% + 5vmin)', top: u(3) }, 9);
+  place('', '▲', { left: u(15), bottom: u(25) }, 12); place('', '▼', { left: u(15), bottom: u(3) }, 13);
+  place('', '◀', { left: u(4), bottom: u(14) }, 14); place('', '▶', { left: u(26), bottom: u(14) }, 15);
+
+  const stick = (css, ax, clickIdx) => {
+    const el = document.createElement('div'); el.className = 'stick'; Object.assign(el.style, css);
+    const thumb = document.createElement('i'); el.appendChild(thumb);
+    let id = -1, tap = 0;
+    const move = e => {
+      const r = el.getBoundingClientRect(), rad = r.width / 2;
+      let dx = (e.clientX - r.left - rad) / rad, dy = (e.clientY - r.top - rad) / rad, m = Math.hypot(dx, dy);
+      if (m > 1) { dx /= m; dy /= m; }
+      touch.a[ax] = dx; touch.a[ax + 1] = dy; thumb.style.transform = `translate(${dx * 50}%, ${dy * 50}%)`;
+    };
+    el.addEventListener('pointerdown', e => {
+      if (id !== -1) return; e.preventDefault(); id = e.pointerId; el.setPointerCapture(id);
+      if (performance.now() - tap < 300) touch.b[clickIdx] = 1;   // doble toc = L3/R3
+      tap = performance.now(); move(e);
+    });
+    el.addEventListener('pointermove', e => { if (e.pointerId === id) move(e); });
+    const end = e => { if (e.pointerId !== id) return; id = -1; touch.a[ax] = touch.a[ax + 1] = 0; touch.b[clickIdx] = 0; thumb.style.transform = ''; };
+    el.addEventListener('pointerup', end); el.addEventListener('pointercancel', end);
+    pad.appendChild(el);
+  };
+  stick({ left: u(40), bottom: u(4) }, 0, 10);
+  stick({ right: u(40), bottom: u(4) }, 2, 11);
+})();
+
+// ------------------------------------------------------------ Botons
+$('go').onclick = () => {
+  pin = $('pin').value.trim(); name = $('name').value.trim();
+  if (!/^\d{4,8}$/.test(pin)) { $('err').textContent = 'El PIN són 4 a 8 xifres'; return; }
+  $('err').textContent = ''; connect();
+  $('v').play().catch(() => {});   // el clic activa la reproducció amb so
+};
+$('pin').addEventListener('keydown', e => { if (e.key === 'Enter') $('go').click(); });
+$('bPad').onclick = () => { touchPadOn = !touchPadOn; $('pad').classList.toggle('hidden', !touchPadOn); };
+$('bFs').onclick = () => { document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen?.().then(() => screen.orientation?.lock?.('landscape').catch(() => {})).catch(() => {}); };
+$('bLeave').onclick = () => { stopped = true; myId = 0; ws?.close(); closePeer(); showJoin(''); };
+</script>
+</body>
+</html>

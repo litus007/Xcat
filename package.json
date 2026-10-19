@@ -20,5 +20,9 @@
   },
   "peerDependencies": {
     "typescript": "^5.9.2"
+  },
+  "scripts": {
+    "relay": "bun relay/relay.mjs",
+    "test:relay": "node --test --test-force-exit relay/test/relay.test.mjs relay/test/integration.test.mjs"
   }
 }

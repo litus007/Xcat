@@ -38,6 +38,8 @@ dependencies {
 // Copia l'script compilat (dist/xcloud-catala.user.js) als assets de l'app
 val copyUserScript by tasks.registering(Copy::class) {
     from(rootProject.file("../dist/xcloud-catala.user.js"))
+    // Pàgina d'espectador del repetidor (la mateixa que fa servir el relé del PC)
+    from(rootProject.file("../relay/viewer.html")) { rename { "relay-viewer.html" } }
     into(layout.projectDirectory.dir("src/main/assets"))
 }
 tasks.matching { it.name == "preBuild" }.configureEach { dependsOn(copyUserScript) }

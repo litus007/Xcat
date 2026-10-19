@@ -27,6 +27,9 @@ import { ControllerExtraSettings } from "./settings/controller-extra";
 import { SuggestionsSetting } from "./settings/suggestions";
 import { MkbExtraSettings } from "./settings/mkb-extra";
 import { GamepadAdapterDialog } from "./gamepad-adapter-dialog";
+import { GamepadTestDialog } from "./gamepad-test-dialog";
+import { NetworkProfiles, type GameProfileMode } from "@/modules/network/network-profiles";
+import { exportBackupToFile, importBackupFromFile } from "@/utils/settings-backup";
 import { GamepadAdapter, getPhysicalInfo } from "@/modules/gamepad-adapter";
 import { BxEventBus } from "@/utils/bx-event-bus";
 import { getGlobalPref, getPrefInfo, getStreamPref, isStreamPref, setGlobalPref, STORAGE } from "@/utils/pref-utils";
@@ -188,6 +191,54 @@ export class SettingsDialog extends NavigationDialog {
             GlobalPref.NETWORK_PROFILE_WIFI_BITRATE,
             GlobalPref.NETWORK_PROFILE_MOBILE_RESOLUTION,
             GlobalPref.NETWORK_PROFILE_MOBILE_BITRATE,
+            ($parent => {
+                const productId = NetworkProfiles.getCurrentProductId();
+                if (!productId) {
+                    $parent.appendChild(CE('div', { class: 'bx-settings-row' }, CE('span', { class: 'bx-settings-label' }, t('network-game-profile-hint'))));
+                    return;
+                }
+
+                const $select = CE('select', { class: 'bx-select' }) as HTMLSelectElement;
+                const options: Array<[GameProfileMode, string]> = [
+                    ['auto', t('network-game-profile-auto')],
+                    ['wifi', t('network-profile-wifi')],
+                    ['mobile', t('network-profile-mobile')],
+                    ['off', t('network-game-profile-off')],
+                ];
+                options.forEach(([value, text]) => $select.appendChild(CE('option', { value }, text)));
+                $select.value = NetworkProfiles.getGameProfile(productId);
+                $select.addEventListener('change', () => NetworkProfiles.setGameProfile(productId, $select.value as GameProfileMode));
+
+                $parent.appendChild(createSettingRow(t('network-game-profile'), $select));
+            }),
+        ],
+    }, {
+        group: 'stream',
+        label: t('relay'),
+        items: [
+            GlobalPref.RELAY_ENABLED,
+            GlobalPref.RELAY_VIEWER_MODE,
+            GlobalPref.RELAY_BITRATE,
+            !AppInterface && GlobalPref.RELAY_PORT,
+        ],
+    }, {
+        group: 'stream',
+        label: t('backup'),
+        items: [
+            ($parent => {
+                $parent.appendChild(CE('div', { class: 'bx-gamepad-adapter-buttons' },
+                    createButton({
+                        label: t('backup-export'),
+                        style: ButtonStyle.FULL_WIDTH | ButtonStyle.FOCUSABLE,
+                        onClick: () => exportBackupToFile(),
+                    }),
+                    createButton({
+                        label: t('backup-import'),
+                        style: ButtonStyle.GHOST | ButtonStyle.FULL_WIDTH | ButtonStyle.FOCUSABLE,
+                        onClick: () => importBackupFromFile(),
+                    }),
+                ));
+            }),
         ],
     }, {
         group: 'stream',
@@ -464,6 +515,14 @@ export class SettingsDialog extends NavigationDialog {
                         onClick: () => {
                             this.hide();
                             GamepadAdapterDialog.show();
+                        },
+                    }),
+                    createButton({
+                        label: t('pad-test'),
+                        style: ButtonStyle.GHOST | ButtonStyle.FULL_WIDTH | ButtonStyle.FOCUSABLE,
+                        onClick: () => {
+                            this.hide();
+                            GamepadTestDialog.show();
                         },
                     }),
                     createButton({

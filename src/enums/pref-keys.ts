@@ -60,6 +60,10 @@ export const enum GlobalPref {
     NETWORK_INDICATOR = 'network.indicator',
     NETWORK_AUTO_RECONNECT = 'network.autoReconnect',
     NETWORK_LOW_LATENCY = 'network.lowLatency',
+    RELAY_ENABLED = 'relay.enabled',
+    RELAY_PORT = 'relay.port',
+    RELAY_VIEWER_MODE = 'relay.viewerMode',
+    RELAY_BITRATE = 'relay.bitrate',
     MKB_HIDE_IDLE_CURSOR = 'mkb.cursor.hideIdle',
 
     SCREENSHOT_APPLY_FILTERS = 'screenshot.applyFilters',
@@ -122,6 +126,10 @@ export type GlobalPrefTypeMap = {
     [GlobalPref.NETWORK_INDICATOR]: boolean;
     [GlobalPref.NETWORK_AUTO_RECONNECT]: boolean;
     [GlobalPref.NETWORK_LOW_LATENCY]: boolean;
+    [GlobalPref.RELAY_ENABLED]: boolean;
+    [GlobalPref.RELAY_PORT]: number;
+    [GlobalPref.RELAY_VIEWER_MODE]: string;
+    [GlobalPref.RELAY_BITRATE]: number;
     [GlobalPref.MKB_HIDE_IDLE_CURSOR]: boolean;
     [GlobalPref.NATIVE_MKB_FORCED_GAMES]: string[];
     [GlobalPref.NATIVE_MKB_MODE]: NativeMkbMode;
@@ -269,6 +277,10 @@ export const ALL_PREFS: {
         GlobalPref.NETWORK_INDICATOR,
         GlobalPref.NETWORK_AUTO_RECONNECT,
         GlobalPref.NETWORK_LOW_LATENCY,
+        GlobalPref.RELAY_ENABLED,
+        GlobalPref.RELAY_PORT,
+        GlobalPref.RELAY_VIEWER_MODE,
+        GlobalPref.RELAY_BITRATE,
         GlobalPref.MKB_HIDE_IDLE_CURSOR,
         GlobalPref.NATIVE_MKB_FORCED_GAMES,
         GlobalPref.NATIVE_MKB_MODE,

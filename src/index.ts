@@ -53,6 +53,7 @@ import { VirtualPad } from "./modules/virtual-pad";
 import { NetworkProfiles } from "./modules/network/network-profiles";
 import { ConnectionMonitor } from "./modules/network/connection-monitor";
 import { ScreenWakeLock } from "./modules/screen-wake-lock";
+import { RelayHost } from "./modules/relay/relay-host";
 
 SettingsManager.getInstance();
 
@@ -425,6 +426,7 @@ function main() {
         NetworkProfiles.setup();
         ConnectionMonitor.getInstance().setup();
         ScreenWakeLock.setup();
+        RelayHost.getInstance().setup();
     }
 
     if (isFullVersion()) {

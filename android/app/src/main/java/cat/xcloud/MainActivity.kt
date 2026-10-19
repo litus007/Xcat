@@ -4,7 +4,11 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.app.Activity
+import android.net.Uri
 import android.os.Bundle
+import android.webkit.ValueCallback
+import androidx.activity.result.contract.ActivityResultContracts
 import android.view.WindowManager
 import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
@@ -30,6 +34,14 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
     private var pendingMicRequest: PermissionRequest? = null
+    private var bridge: AppBridge? = null
+    private var fileCallback: ValueCallback<Array<Uri>>? = null
+
+    private val fileChooser = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val uris = WebChromeClient.FileChooserParams.parseResult(result.resultCode, result.data)
+        fileCallback?.onReceiveValue(if (result.resultCode == Activity.RESULT_OK) uris else null)
+        fileCallback = null
+    }
 
     // Dominis que es poden obrir dins l'app (inici de sessió de Microsoft inclòs)
     private val allowedHosts = listOf(
@@ -51,8 +63,17 @@ class MainActivity : AppCompatActivity() {
             javaScriptEnabled = true
             domStorageEnabled = true
             mediaPlaybackRequiresUserGesture = false
-            mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+            // ws://127.0.0.1 (ratolí i relé locals) des de la pàgina https: el mode de compatibilitat l'accepta
+            mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
             userAgentString = userAgentString.replace("; wv", "").replace(Regex("Version/\\S+\\s"), "")
+        }
+
+        // Pont amb l'app: ratolí/teclat natius, captures, vibració, dreceres...
+        webView.isFocusable = true
+        webView.isFocusableInTouchMode = true
+        bridge = AppBridge(this, webView).also { b ->
+            webView.addJavascriptInterface(b, "AppInterface")
+            webView.setOnCapturedPointerListener { _, event -> b.onCapturedPointer(event); true }
         }
 
         val script = loadUserScript()
@@ -76,6 +97,20 @@ class MainActivity : AppCompatActivity() {
         }
 
         webView.webChromeClient = object : WebChromeClient() {
+            override fun onShowFileChooser(
+                view: WebView, callback: ValueCallback<Array<Uri>>, params: FileChooserParams,
+            ): Boolean {
+                fileCallback?.onReceiveValue(null)
+                fileCallback = callback
+                return try {
+                    fileChooser.launch(params.createIntent())
+                    true
+                } catch (e: Exception) {
+                    fileCallback = null
+                    false
+                }
+            }
+
             override fun onPermissionRequest(request: PermissionRequest) {
                 runOnUiThread {
                     if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.RECORD_AUDIO)
@@ -134,7 +169,12 @@ class MainActivity : AppCompatActivity() {
         if (webView.canGoBack()) webView.goBack() else super.onBackPressed()
     }
 
+    override fun onPointerCaptureChanged(hasCapture: Boolean) {
+        super.onPointerCaptureChanged(hasCapture)
+        bridge?.onCaptureChanged(hasCapture)
+    }
+
     override fun onPause() { super.onPause(); webView.onPause() }
     override fun onResume() { super.onResume(); webView.onResume() }
-    override fun onDestroy() { webView.destroy(); super.onDestroy() }
+    override fun onDestroy() { bridge?.destroy(); webView.destroy(); super.onDestroy() }
 }

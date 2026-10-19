@@ -437,6 +437,41 @@ export class GlobalSettingsStorage extends BaseSettingsStorage<GlobalPref> {
             note: t('network-low-latency-note'),
             default: false,
         },
+        [GlobalPref.RELAY_ENABLED]: {
+            requiredVariants: 'full',
+            label: t('relay-enable'),
+            note: t('relay-enable-note'),
+            default: false,
+        },
+        [GlobalPref.RELAY_PORT]: {
+            requiredVariants: 'full',
+            label: t('relay-port'),
+            default: 8787,
+            min: 1024,
+            max: 65535,
+            params: { steps: 1, hideSlider: true },
+        },
+        [GlobalPref.RELAY_VIEWER_MODE]: {
+            requiredVariants: 'full',
+            label: t('relay-mode'),
+            default: 'shared',
+            options: {
+                shared: t('relay-mode-shared'),
+                players: t('relay-mode-players'),
+            },
+        },
+        [GlobalPref.RELAY_BITRATE]: {
+            requiredVariants: 'full',
+            label: t('relay-bitrate'),
+            default: 10,
+            min: 2,
+            max: 30,
+            params: {
+                steps: 1,
+                exactTicks: 7,
+                customTextValue: (value: any) => parseInt(value) + ' Mb/s',
+            },
+        },
         [GlobalPref.VIRTUAL_PAD_ENABLED]: {
             requiredVariants: 'full',
             label: t('virtual-pad-enable'),
@@ -659,6 +694,9 @@ export class GlobalSettingsStorage extends BaseSettingsStorage<GlobalPref> {
      */
     private static overrides: Partial<Record<GlobalPref, any>> = {};
 
+    /** S'executa abans de llegir un override (permet recalcular-los quan canvia la pàgina del joc). */
+    static onBeforeOverrideRead: (() => void) | null = null;
+
     static setOverrides(overrides: Partial<Record<GlobalPref, any>>) {
         GlobalSettingsStorage.overrides = overrides;
     }
@@ -668,6 +706,7 @@ export class GlobalSettingsStorage extends BaseSettingsStorage<GlobalPref> {
     }
 
     getSetting<K extends keyof PrefTypeMap<K>>(key: K, checkUnsupported = true): PrefTypeMap<K>[K] {
+        GlobalSettingsStorage.onBeforeOverrideRead?.();
         const overrides = GlobalSettingsStorage.overrides;
         if ((key as unknown as GlobalPref) in overrides) {
             return overrides[key as unknown as GlobalPref];

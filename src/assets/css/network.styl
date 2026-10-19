@@ -27,3 +27,21 @@
         cursor: pointer;
     }
 }
+
+.bx-relay-pill {
+    position: fixed;
+    left: calc(12px + env(safe-area-inset-left));
+    bottom: calc(12px + env(safe-area-inset-bottom));
+    z-index: var(--bx-toast-z-index);
+    padding: 6px 14px;
+    border-radius: 999px;
+    background: rgba(20, 20, 20, 0.88);
+    border: 1px solid rgba(255, 255, 255, 0.5);
+    color: #fff;
+    font: 13px var(--bx-normal-font, sans-serif);
+    pointer-events: none;
+    max-width: calc(100vw - 40px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}

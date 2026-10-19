@@ -194,7 +194,7 @@ export class GamepadAdapter {
     private profiles: Record<string, AdapterProfile> = {};
     private learningKeys = new Set<string>();
 
-    private config = { enabled: false, swapFace: false, deadzone: DEFAULT_DEADZONE };
+    private config = { enabled: false, swapFace: false, deadzone: DEFAULT_DEADZONE, remoteMode: 'shared' };
     private configTimestamp = 0;
 
     private constructor() {
@@ -247,6 +247,7 @@ export class GamepadAdapter {
             this.config.enabled = !!getGlobalPref(GlobalPref.GAMEPAD_ADAPTER_ENABLED);
             this.config.swapFace = !!getGlobalPref(GlobalPref.GAMEPAD_ADAPTER_SWAP_FACE);
             this.config.deadzone = (getGlobalPref(GlobalPref.GAMEPAD_ADAPTER_DEADZONE) as number) / 100;
+            this.config.remoteMode = getGlobalPref(GlobalPref.RELAY_VIEWER_MODE) as string;
         } catch (e) {}
     }
 
@@ -344,7 +345,8 @@ export class GamepadAdapter {
         this.refreshConfig();
 
         const virtualOn = this.virtual.active;
-        if ((!this.config.enabled && !virtualOn) || !list) {
+        const remoteOn = this.remotes.size > 0;
+        if ((!this.config.enabled && !virtualOn && !remoteOn) || !list) {
             return list;
         }
 
@@ -354,22 +356,36 @@ export class GamepadAdapter {
             const gp = this.config.enabled ? this.adaptOne(list[i] ?? null) : (list[i] ?? null);
             result[i] = gp as Gamepad | null;
 
-            // El mando digital es fusiona amb el primer mando de layout estàndard
-            if (virtualOn && mergeIndex < 0 && gp?.connected && gp.mapping === 'standard' && !gp.id.includes(VIRTUAL_PAD_ID)) {
+            // Les fonts extra es fusionen amb el primer mando de layout estàndard
+            if (mergeIndex < 0 && gp?.connected && gp.mapping === 'standard' && !gp.id.includes(VIRTUAL_PAD_ID)) {
                 mergeIndex = i;
             }
         }
 
-        if (virtualOn) {
+        // Fonts compartides: mando digital + espectadors (mode "comparteixen el jugador 1")
+        const sources: Array<{ buttons: number[]; axes: number[] }> = [];
+        virtualOn && sources.push(this.virtual);
+        if (this.config.remoteMode !== 'players') {
+            sources.push(...this.activeRemoteStates());
+        }
+
+        if (sources.length) {
             if (mergeIndex >= 0) {
-                result[mergeIndex] = this.mergeVirtual(result[mergeIndex]!, mergeIndex) as any;
+                result[mergeIndex] = this.mergeSources(result[mergeIndex]!, mergeIndex, sources) as any;
                 this.setStandalone(false);
             } else {
-                this.fillFromVirtual(this.virtualGamepad);
+                this.fillFromSources(this.virtualGamepad, sources);
                 this.virtualGamepad.timestamp = performance.now();
                 result[0] = this.virtualGamepad as any;
                 this.setStandalone(true);
             }
+        } else {
+            this.setStandalone(false);
+        }
+
+        // Mode "un jugador per espectador": cada espectador ocupa una ranura lliure
+        if (this.config.remoteMode === 'players' && remoteOn) {
+            this.assignRemotePlayers(result);
         }
 
         return result as any;
@@ -423,10 +439,13 @@ export class GamepadAdapter {
         });
     }
 
-    private fillFromVirtual(target: { buttons: any[]; axes: number[] }, base?: { buttons: any[]; axes: number[] }) {
-        const v = this.virtual;
+    private fillFromSources(target: { buttons: any[]; axes: number[] }, sources: Array<{ buttons: number[]; axes: number[] }>, base?: { buttons: any[]; axes: number[] }) {
         for (let i = 0; i < 17; i++) {
-            const value = Math.max(v.buttons[i]!, base?.buttons[i]?.value ?? 0);
+            let value = base?.buttons[i]?.value ?? 0;
+            for (const src of sources) {
+                value = Math.max(value, src.buttons[i] ?? 0);
+            }
+
             const btn = target.buttons[i];
             btn.value = value;
             btn.pressed = value > 0.5;
@@ -434,12 +453,16 @@ export class GamepadAdapter {
         }
 
         for (let i = 0; i < 4; i++) {
-            const a = base?.axes[i] ?? 0;
-            target.axes[i] = Math.abs(v.axes[i]!) > Math.abs(a) ? v.axes[i]! : a;
+            let axis = base?.axes[i] ?? 0;
+            for (const src of sources) {
+                const v = src.axes[i] ?? 0;
+                if (Math.abs(v) > Math.abs(axis)) axis = v;
+            }
+            target.axes[i] = axis;
         }
     }
 
-    private mergeVirtual(gp: any, index: number) {
+    private mergeSources(gp: any, index: number, sources: Array<{ buttons: number[]; axes: number[] }>) {
         let out = this.merged[index];
         if (!out || out.id !== gp.id) {
             out = this.merged[index] = {
@@ -452,8 +475,79 @@ export class GamepadAdapter {
 
         out.timestamp = gp.timestamp;
         out.vibrationActuator = gp.vibrationActuator ?? null;
-        this.fillFromVirtual(out, gp);
+        this.fillFromSources(out, sources, gp);
         return out;
+    }
+
+    // ---------------------------------------------------------------- Espectadors remots (relé)
+
+    /** Estat dels mandos dels espectadors, indexat per l'identificador que dona el relé. */
+    readonly remotes = new Map<number, { buttons: number[]; axes: number[]; lastSeen: number }>();
+    private remotePads = new Map<number, any>();
+    private remoteSlots = new Map<number, number>();
+
+    setRemoteInput(id: number, buttons: number[], axes: number[]) {
+        this.remotes.set(id, { buttons, axes, lastSeen: performance.now() });
+    }
+
+    removeRemote(id: number) {
+        this.remotes.delete(id);
+
+        const pad = this.remotePads.get(id);
+        if (pad && this.remoteSlots.has(id)) {
+            pad.connected = false;
+            BxEvent.dispatch(window, 'gamepaddisconnected', { gamepad: pad });
+        }
+
+        this.remotePads.delete(id);
+        this.remoteSlots.delete(id);
+    }
+
+    clearRemotes() {
+        Array.from(this.remotes.keys()).forEach(id => this.removeRemote(id));
+    }
+
+    private static readonly NEUTRAL = { buttons: new Array<number>(17).fill(0), axes: [0, 0, 0, 0] };
+
+    /** Un espectador amb la pestanya en segon pla (sense dades > 3 s) es considera en repòs. */
+    private activeRemoteStates() {
+        const now = performance.now();
+        return Array.from(this.remotes.values()).map(r => now - r.lastSeen > 3000 ? GamepadAdapter.NEUTRAL : r);
+    }
+
+    private assignRemotePlayers(result: Array<Gamepad | null>) {
+        const now = performance.now();
+        const ids = Array.from(this.remotes.keys()).sort((a, b) => a - b);
+
+        for (const id of ids) {
+            let slot = -1;
+            for (let i = 0; i < result.length; i++) {
+                if (!result[i]?.connected) { slot = i; break; }
+            }
+            if (slot < 0) break; // no queden ranures (màxim 4 mandos)
+
+            let pad = this.remotePads.get(id);
+            if (!pad) {
+                pad = {
+                    id: `${VIRTUAL_PAD_ID} Remote ${id}`, index: slot, connected: true, mapping: 'standard', timestamp: now,
+                    axes: [0, 0, 0, 0],
+                    buttons: new Array(17).fill(null).map(() => ({ pressed: false, touched: false, value: 0 })),
+                    vibrationActuator: null, hapticActuators: null, _bxAdapted: true,
+                };
+                this.remotePads.set(id, pad);
+            }
+
+            pad.index = slot;
+            pad.timestamp = now;
+            const state = this.remotes.get(id)!;
+            this.fillFromSources(pad, [now - state.lastSeen > 3000 ? GamepadAdapter.NEUTRAL : state]);
+            result[slot] = pad;
+
+            if (this.remoteSlots.get(id) !== slot) {
+                this.remoteSlots.set(id, slot);
+                BxEvent.dispatch(window, 'gamepadconnected', { gamepad: pad });
+            }
+        }
     }
 
     private adaptOne(gp: Gamepad | null): Gamepad | AdaptedGamepad | null {
