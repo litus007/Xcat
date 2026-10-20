@@ -5,7 +5,7 @@ import { encodeFrame, FrameParser, OP } from '../ws-lite.mjs';
 export const openSockets = new Set();
 
 /** Client WebSocket de prova (amb màscara, com un navegador). */
-export function connect(port, { role, origin, hostHeader } = {}) {
+export function connect(port, { role, origin, hostHeader, autoPong = true } = {}) {
     return new Promise((resolve, reject) => {
         const socket = net.connect(port, '127.0.0.1');
         openSockets.add(socket);
@@ -67,6 +67,7 @@ export function connect(port, { role, origin, hostHeader } = {}) {
             for (const m of parser.push(chunk)) {
                 const item = { opcode: m.opcode, payload: m.payload };
                 if (m.opcode === OP.TEXT) item.json = JSON.parse(m.payload.toString());
+                if (m.opcode === OP.PING && autoPong) socket.write(encodeFrame(OP.PONG, m.payload, true));   // com un navegador
                 inbox.push(item);
             }
             deliver();

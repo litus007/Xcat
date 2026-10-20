@@ -1,6 +1,9 @@
 import { GlobalPref, StorageKey } from "@/enums/pref-keys";
 import { BxLogger } from "@utils/bx-logger";
-import { getGlobalPref } from "@utils/pref-utils";
+import { getGlobalPref, getStreamPref } from "@utils/pref-utils";
+import { StreamPref } from "@/enums/pref-keys";
+import { Toast } from "@utils/toast";
+import { t } from "@utils/translation";
 import { BxEvent } from "@utils/bx-event";
 
 /**
@@ -421,8 +424,35 @@ export class GamepadAdapter {
         if (!active) {
             this.virtual.buttons.fill(0);
             this.virtual.axes.fill(0);
-            this.setStandalone(false);
         }
+
+        this.syncStandalone();
+    }
+
+    /** Hi ha algun mando físic (de layout estàndard o adaptat) connectat? */
+    private hasPhysicalPad(): boolean {
+        if (!this.installed) {
+            return false;
+        }
+
+        for (const gp of this.nativeGetGamepads() || []) {
+            if (gp?.connected && !gp.id.includes(VIRTUAL_PAD_ID) && (gp.mapping === 'standard' || this.config.enabled)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Connecta/desconnecta de seguida el mando "extra" (digital + espectadors compartits). Cal fer-ho aquí i no
+     * només dins getGamepads(): xCloud no sondeja cap mando fins que n'hi ha un de connectat, així que
+     * l'esdeveniment "gamepadconnected" ha de sortir quan la font s'activa.
+     */
+    private syncStandalone() {
+        this.refreshConfig(true);
+        const sharedRemotes = this.config.remoteMode !== 'players' && this.remotes.size > 0;
+        this.setStandalone((this.virtual.active || sharedRemotes) && !this.hasPhysicalPad());
     }
 
     /** Avisa xCloud quan el mando digital passa a ser l'únic mando connectat (i viceversa). */
@@ -487,7 +517,13 @@ export class GamepadAdapter {
     private remoteSlots = new Map<number, number>();
 
     setRemoteInput(id: number, buttons: number[], axes: number[]) {
+        const isNew = !this.remotes.has(id);
         this.remotes.set(id, { buttons, axes, lastSeen: performance.now() });
+
+        if (isNew) {
+            this.refreshConfig(true);
+            this.config.remoteMode === 'players' ? this.ensureRemotePlayer(id) : this.syncStandalone();
+        }
     }
 
     removeRemote(id: number) {
@@ -501,6 +537,76 @@ export class GamepadAdapter {
 
         this.remotePads.delete(id);
         this.remoteSlots.delete(id);
+
+        this.syncStandalone();
+        this.restoreCoOp();
+    }
+
+    // ---- Cooperatiu local: perquè la consola vegi els espectadors com a jugadors reals (2, 3 i 4)
+
+    private coOpForced = false;
+
+    private enableCoOp() {
+        if (this.coOpForced) {
+            return;
+        }
+
+        this.coOpForced = true;
+        (window as any).BX_EXPOSED?.toggleLocalCoOp?.(true);
+        Toast.show(t('local-co-op'), t('enabled'), { instant: true });
+    }
+
+    /** Quan no queda cap espectador-jugador, es torna al valor que té configurat l'usuari. */
+    private restoreCoOp() {
+        if (!this.coOpForced || this.remoteSlots.size > 0) {
+            return;
+        }
+
+        this.coOpForced = false;
+        (window as any).BX_EXPOSED?.toggleLocalCoOp?.(!!getStreamPref(StreamPref.LOCAL_CO_OP_ENABLED));
+    }
+
+    /** Ranures (0..3) que ja ocupa algun mando: físics, el mando extra i altres espectadors. */
+    private occupiedSlots(exceptId?: number): Set<number> {
+        const used = new Set<number>();
+        if (this.installed) {
+            for (const gp of this.nativeGetGamepads() || []) {
+                gp?.connected && !gp.id.includes(VIRTUAL_PAD_ID) && used.add(gp.index);
+            }
+        }
+
+        this.remoteSlots.forEach((slot, id) => id !== exceptId && used.add(slot));
+        return used;
+    }
+
+    private ensureRemotePlayer(id: number) {
+        if (this.remoteSlots.has(id)) {
+            return;
+        }
+
+        // Primer s'habilita el cooperatiu: així xCloud ja tracta l'índex de cada mando en rebre'l
+        this.enableCoOp();
+
+        const used = this.occupiedSlots(id);
+        let slot = -1;
+        for (let i = 0; i < 4; i++) {
+            if (!used.has(i)) { slot = i; break; }
+        }
+
+        if (slot < 0) {
+            return; // no queden ranures: la consola admet 4 mandos
+        }
+
+        const pad = {
+            id: `${VIRTUAL_PAD_ID} Remote ${id}`, index: slot, connected: true, mapping: 'standard', timestamp: performance.now(),
+            axes: [0, 0, 0, 0],
+            buttons: new Array(17).fill(null).map(() => ({ pressed: false, touched: false, value: 0 })),
+            vibrationActuator: null, hapticActuators: null, _bxAdapted: true,
+        };
+
+        this.remotePads.set(id, pad);
+        this.remoteSlots.set(id, slot);
+        BxEvent.dispatch(window, 'gamepadconnected', { gamepad: pad });
     }
 
     clearRemotes() {
@@ -517,36 +623,39 @@ export class GamepadAdapter {
 
     private assignRemotePlayers(result: Array<Gamepad | null>) {
         const now = performance.now();
-        const ids = Array.from(this.remotes.keys()).sort((a, b) => a - b);
+        const ids = Array.from(this.remotes.keys()).sort((x, y) => x - y);
 
         for (const id of ids) {
-            let slot = -1;
-            for (let i = 0; i < result.length; i++) {
-                if (!result[i]?.connected) { slot = i; break; }
-            }
-            if (slot < 0) break; // no queden ranures (màxim 4 mandos)
+            this.ensureRemotePlayer(id); // per si encara no té ranura
 
-            let pad = this.remotePads.get(id);
-            if (!pad) {
-                pad = {
-                    id: `${VIRTUAL_PAD_ID} Remote ${id}`, index: slot, connected: true, mapping: 'standard', timestamp: now,
-                    axes: [0, 0, 0, 0],
-                    buttons: new Array(17).fill(null).map(() => ({ pressed: false, touched: false, value: 0 })),
-                    vibrationActuator: null, hapticActuators: null, _bxAdapted: true,
-                };
-                this.remotePads.set(id, pad);
+            const pad = this.remotePads.get(id);
+            let slot = this.remoteSlots.get(id);
+            if (!pad || slot === undefined) {
+                continue;
             }
 
-            pad.index = slot;
+            // Si un mando físic ha ocupat la ranura mentrestant, es busca una altra
+            if (result[slot]?.connected && !result[slot]!.id.includes(VIRTUAL_PAD_ID)) {
+                const used = this.occupiedSlots(id);
+                result.forEach((gp, i) => gp?.connected && used.add(i));
+                const free = [0, 1, 2, 3].find(i => !used.has(i));
+                if (free === undefined) {
+                    continue;
+                }
+
+                pad.connected = false;
+                BxEvent.dispatch(window, 'gamepaddisconnected', { gamepad: pad });
+                slot = free;
+                pad.index = slot;
+                pad.connected = true;
+                this.remoteSlots.set(id, slot);
+                BxEvent.dispatch(window, 'gamepadconnected', { gamepad: pad });
+            }
+
             pad.timestamp = now;
             const state = this.remotes.get(id)!;
             this.fillFromSources(pad, [now - state.lastSeen > 3000 ? GamepadAdapter.NEUTRAL : state]);
             result[slot] = pad;
-
-            if (this.remoteSlots.get(id) !== slot) {
-                this.remoteSlots.set(id, slot);
-                BxEvent.dispatch(window, 'gamepadconnected', { gamepad: pad });
-            }
         }
     }
 

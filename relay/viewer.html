@@ -40,10 +40,12 @@ video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: contai
 
 <div id="join">
   <h1>📺 xCloud Català · Espectador</h1>
-  <div>Escriu el PIN que apareix a la pantalla de l'amfitrió</div>
+  <div>Escriu el PIN que apareix a la pantalla de l'amfitrió…</div>
   <input id="pin" inputmode="numeric" autocomplete="off" maxlength="8" placeholder="······" aria-label="PIN">
   <input id="name" class="name" maxlength="24" placeholder="El teu nom (opcional)" aria-label="Nom">
-  <button id="go">Connecta</button>
+  <button id="go">Connecta amb el PIN</button>
+  <div>…o demana accés i l'amfitrió t'ho aprova</div>
+  <button id="ask" class="ghost">Demana accés</button>
   <div id="err" role="alert"></div>
 </div>
 
@@ -61,7 +63,10 @@ video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: contai
 "use strict";
 const $ = id => document.getElementById(id);
 const FRAME = 26;   // [1][17 botons u8][4 eixos i16 BE]
-let ws = null, pc = null, myId = 0, joined = false, pin = '', name = '', retry = 0, stopped = false;
+let ws = null, pc = null, myId = 0, joined = false, pin = '', name = '', retry = 0, stopped = false, mode = 'pin', currentSid = '';
+const params = new URLSearchParams(location.search);
+const target = params.get('host') || location.host;            // l'app d'Android carrega aquesta pàgina des d'un origen intern
+const deviceId = (() => { try { let d = localStorage.getItem('xcc.device'); if (!d) { d = crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2) + Date.now(); localStorage.setItem('xcc.device', d); } return d; } catch (_) { return ''; } })();
 let statusTimer = 0;
 
 // ------------------------------------------------------------ Interfície
@@ -86,9 +91,10 @@ function showViewer() {
 // ------------------------------------------------------------ Senyalització
 function connect() {
   stopped = false;
-  ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws?role=viewer');
+  const secure = location.protocol === 'https:' && !params.get('host');
+  ws = new WebSocket((secure ? 'wss://' : 'ws://') + target + '/ws?role=viewer');
   ws.binaryType = 'arraybuffer';
-  ws.onopen = () => ws.send(JSON.stringify({ type: 'join', pin, name }));
+  ws.onopen = () => ws.send(JSON.stringify(mode === 'pin' ? { type: 'join', pin, name } : { type: 'join', name, deviceId }));
   ws.onmessage = e => { if (typeof e.data === 'string') onMessage(JSON.parse(e.data)); };
   ws.onclose = () => {
     joined = false; closePeer();
@@ -105,12 +111,15 @@ function onMessage(m) {
       setStatus(m.hostOnline ? 'Connectat · esperant el vídeo…' : 'Connectat · esperant que l\'amfitrió iniciï la partida…', true);
       checkGamepadSupport();
       break;
+    case 'waiting': setStatus('⏳ Esperant que l\'amfitrió t\'accepti… (mira la pantalla de la partida)', true); break;
     case 'signal': onSignal(m.data); break;
-    case 'host-offline': closePeer(); setStatus('L\'amfitrió ha aturat la partida. Esperant…', true); break;
+    // La connexió de vídeo és directa: si només cau el relé no es toca, per no perdre la imatge
+    case 'host-offline': setStatus('Reconnectant amb l\'amfitrió…', true); break;
     case 'host-online': setStatus('L\'amfitrió és de nou en línia…'); break;
     case 'error': {
       stopped = true; myId = 0;
-      const text = { pin: 'PIN incorrecte', locked: 'Massa intents. Torna-ho a provar d\'aquí a un minut', full: 'No hi ha més places d\'espectador', kicked: 'L\'amfitrió t\'ha expulsat' }[m.reason] || 'Error de connexió';
+      const text = { pin: 'PIN incorrecte', locked: 'Massa intents. Torna-ho a provar d\'aquí a un minut', full: 'No hi ha més places d\'espectador', kicked: 'L\'amfitrió t\'ha expulsat',
+        denied: 'L\'amfitrió ha rebutjat l\'accés', timeout: 'L\'amfitrió no ha respost a temps', 'no-host': 'Ningú està compartint ara mateix. Inicia la partida a l\'amfitrió i torna-ho a provar', busy: 'Massa sol·licituds pendents' }[m.reason] || 'Error de connexió';
       closePeer(); showJoin(text); break;
     }
   }
@@ -119,6 +128,9 @@ function onMessage(m) {
 async function onSignal(d) {
   try {
     if (d.sdp) {
+      // Una oferta amb una sessió diferent vol dir que l'amfitrió ha creat una connexió nova
+      if (pc && d.sid && d.sid !== currentSid) closePeer();
+      if (d.sid) currentSid = d.sid;
       if (!pc) createPeer();
       await pc.setRemoteDescription({ type: d.type, sdp: d.sdp });
       if (d.type === 'offer') {
@@ -147,7 +159,23 @@ function createPeer() {
     if (pc?.connectionState === 'failed') setStatus('No es pot rebre el vídeo (xarxa o tallafoc)', true);
   };
 }
-function closePeer() { try { pc?.close(); } catch (_) {} pc = null; $('v').srcObject = null; }
+function closePeer() { try { pc?.close(); } catch (_) {} pc = null; currentSid = ''; $('v').srcObject = null; audioChecks = 0; }
+
+// Diagnòstic de l'àudio: avisa si arriba el vídeo però no el so
+let audioChecks = 0;
+setInterval(async () => {
+  if (!pc || pc.connectionState !== 'connected') return;
+  try {
+    const stats = await pc.getStats();
+    let bytes = 0, energy = 0, hasAudio = false;
+    stats.forEach(r => { if (r.type === 'inbound-rtp' && r.kind === 'audio') { hasAudio = true; bytes = r.bytesReceived || 0; energy = r.totalAudioEnergy || 0; } });
+    if (++audioChecks === 4) {   // ~8 s després de connectar
+      if (!hasAudio) setStatus('🔇 L\'amfitrió no envia àudio', true);
+      else if (bytes === 0) setStatus('🔇 No arriba àudio (xarxa?)', true);
+      else if (energy === 0) setStatus('🔇 L\'àudio arriba en silenci. Puja el volum del joc a l\'amfitrió', true);
+    }
+  } catch (_) {}
+}, 2000);
 
 $('v').addEventListener('click', () => { $('v').play().catch(() => {}); $('bar').classList.toggle('hide'); });
 
@@ -254,11 +282,20 @@ addEventListener('keyup', e => { if (e.code in KEYMAP) keys.b[KEYMAP[e.code]] = 
 
 // ------------------------------------------------------------ Botons
 $('go').onclick = () => {
-  pin = $('pin').value.trim(); name = $('name').value.trim();
+  pin = $('pin').value.trim(); name = $('name').value.trim(); mode = 'pin';
   if (!/^\d{4,8}$/.test(pin)) { $('err').textContent = 'El PIN són 4 a 8 xifres'; return; }
   $('err').textContent = ''; connect();
   $('v').play().catch(() => {});   // el clic activa la reproducció amb so
 };
+$('ask').onclick = () => {
+  name = $('name').value.trim() || defaultName(); mode = 'request';
+  $('err').textContent = 'Esperant que l\'amfitrió t\'accepti…'; connect();
+  $('v').play().catch(() => {});
+};
+function defaultName() { return params.get('name') || (navigator.userAgentData?.platform || 'Dispositiu'); }
+
+// Mode automàtic (l'app d'Android): demana accés directament
+if (params.get('auto') === '1') { name = defaultName(); mode = 'request'; $('err').textContent = 'Connectant…'; connect(); }
 $('pin').addEventListener('keydown', e => { if (e.key === 'Enter') $('go').click(); });
 $('bPad').onclick = () => { touchPadOn = !touchPadOn; $('pad').classList.toggle('hidden', !touchPadOn); };
 $('bFs').onclick = () => { document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen?.().then(() => screen.orientation?.lock?.('landscape').catch(() => {})).catch(() => {}); };

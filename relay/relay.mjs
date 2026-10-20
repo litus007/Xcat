@@ -8,6 +8,7 @@
 // Aquest servidor només fa de senyalització (WebRTC) i de pont d'entrada dels mandos; el vídeo
 // va directament del PC als espectadors.
 import http from 'node:http';
+import dgram from 'node:dgram';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -54,14 +55,26 @@ export function createRelay(options = {}) {
         urlsProvider = lanUrls,
         joinTimeoutMs = 5000,
         idleTimeoutMs = 30000,
+        sweepMs = 10000,
         maxFailures = 5,
         lockMs = 60000,
+        // L'app d'Android carrega la pàgina d'espectador des d'aquest origen intern (context segur -> mandos)
+        extraViewerOrigins = ['https://appassets.androidplatform.net'],
+        approvalTimeoutMs = 30000,
+        maxPendingPerIp = 2,
+        maxPending = 5,
+        discoveryPort = 8788,      // UDP; 0 = ephemeral; null = desactivat
+        name = os.hostname(),
     } = options;
 
     let host = null;                     // client del host
     const viewers = new Map();           // id -> client
     const failures = new Map();          // ip -> { count, until }
     let listenPort = 0;
+    let udp = null;
+    let nextRequestId = 1;
+    let joinCounter = 0;     // identificador únic per cada unió (permet distingir una connexió nova d'una antiga)
+    const pending = new Map();           // rid -> { client, timer }
 
     const server = http.createServer((req, res) => {
         const path = (req.url || '/').split('?')[0];
@@ -145,7 +158,8 @@ export function createRelay(options = {}) {
             // Evita que una pàgina web aliena (altre origen) es connecti en nom de l'usuari
             let originHost = null;
             try { originHost = origin ? new URL(origin).host : null; } catch (e) {}
-            if (!originHost || originHost !== req.headers.host) {
+            const sameOrigin = !!originHost && originHost === req.headers.host;
+            if (!sameOrigin && !extraViewerOrigins.includes(origin)) {
                 return reject(socket, 403, 'Forbidden');
             }
         } else {
@@ -200,10 +214,11 @@ export function createRelay(options = {}) {
     function hello() {
         return {
             type: 'hello',
+            name,
             pin,
             urls: urlsProvider(listenPort),
             maxViewers,
-            viewers: [...viewers.values()].filter(v => v.joined).map(v => ({ id: v.id, name: v.name })),
+            viewers: [...viewers.values()].filter(v => v.joined).map(v => ({ id: v.id, name: v.name, vsid: v.vsid })),
         };
     }
 
@@ -215,7 +230,7 @@ export function createRelay(options = {}) {
         client.sendText(hello());
         for (const v of viewers.values()) {
             if (v.joined) {
-                client.sendText({ type: 'viewer-joined', id: v.id, name: v.name });
+                client.sendText({ type: 'viewer-joined', id: v.id, name: v.name, vsid: v.vsid });
                 v.sendText({ type: 'host-online' });
             }
         }
@@ -233,6 +248,17 @@ export function createRelay(options = {}) {
             const v = viewers.get(msg.to);
             // Els candidats del host s'adrecen amb la IP per la qual el vídeo arriba a l'espectador
             v?.joined && v.sendText({ type: 'signal', data: rewriteMdns(msg.data, v.localIp) });
+        } else if (msg.type === 'approve' || msg.type === 'deny') {
+            const entry = pending.get(msg.rid);
+            if (!entry) return;
+            pending.delete(msg.rid);
+            clearTimeout(entry.timer);
+            if (msg.type === 'approve') {
+                admit(entry.client, entry.msg);
+            } else {
+                entry.client.sendText({ type: 'error', reason: 'denied' });
+                entry.client.close(4006);
+            }
         } else if (msg.type === 'kick') {
             const v = viewers.get(msg.id);
             v?.sendText({ type: 'error', reason: 'kicked' });
@@ -252,16 +278,49 @@ export function createRelay(options = {}) {
         client.joinTimer.unref?.();
     }
 
+    /** Assigna identificador a l'espectador i l'incorpora a la sessió. */
+    function admit(client, msg) {
+        if (client.joined || client.closed) return;
+
+        let id = 0;
+        for (let i = 1; i <= maxViewers; i++) if (!viewers.has(i)) { id = i; break; }
+        if (!id) {
+            client.sendText({ type: 'error', reason: 'full' });
+            return client.close(4004);
+        }
+
+        clearTimeout(client.joinTimer);
+        client.id = id;
+        client.vsid = ++joinCounter;
+        client.joined = true;
+        client.name = String(msg.name ?? '').slice(0, 24);
+        viewers.set(id, client);
+
+        log('Espectador', id, client.ip);
+        client.sendText({ type: 'joined', id, hostOnline: !!host });
+        host?.sendText({ type: 'viewer-joined', id, name: client.name, vsid: client.vsid });
+    }
+
+    function removePending(client) {
+        for (const [rid, entry] of pending) {
+            if (entry.client === client) { clearTimeout(entry.timer); pending.delete(rid); }
+        }
+    }
+
     function onViewerMessage(client, msg) {
         if (msg.type === 'join') {
-            if (client.joined) return;
+            if (client.joined || client.requesting) return;
+
+            if (msg.pin === undefined || msg.pin === null || msg.pin === '') {
+                return requestApproval(client, msg);
+            }
 
             if (isLocked(client.ip)) {
                 client.sendText({ type: 'error', reason: 'locked' });
                 return client.close(4001);
             }
 
-            const supplied = String(msg.pin ?? '');
+            const supplied = String(msg.pin);
             const a = Buffer.from(supplied.padEnd(32).slice(0, 32));
             const b = Buffer.from(pin.padEnd(32).slice(0, 32));
             if (supplied.length !== pin.length || !crypto.timingSafeEqual(a, b)) {
@@ -273,27 +332,45 @@ export function createRelay(options = {}) {
                 return client.close(4001);
             }
 
-            let id = 0;
-            for (let i = 1; i <= maxViewers; i++) if (!viewers.has(i)) { id = i; break; }
-            if (!id) {
-                client.sendText({ type: 'error', reason: 'full' });
-                return client.close(4004);
-            }
-
             failures.delete(client.ip);
-            clearTimeout(client.joinTimer);
-            client.id = id;
-            client.joined = true;
-            client.name = String(msg.name ?? '').slice(0, 24);
-            viewers.set(id, client);
-
-            log('Espectador', id, client.ip);
-            client.sendText({ type: 'joined', id, hostOnline: !!host });
-            host?.sendText({ type: 'viewer-joined', id, name: client.name });
+            admit(client, msg);
         } else if (msg.type === 'signal' && client.joined) {
             // Els candidats de l'espectador (mDNS) es tradueixen a la seva IP real
             host?.sendText({ type: 'signal', from: client.id, data: rewriteMdns(msg.data, client.ip) });
         }
+    }
+
+    /** Sense PIN: l'amfitrió (la persona davant la pantalla) ha d'aprovar l'espectador. */
+    function requestApproval(client, msg) {
+        if (!host) {
+            client.sendText({ type: 'error', reason: 'no-host' });
+            return client.close(4007);
+        }
+
+        const mine = [...pending.values()].filter(e => e.client.ip === client.ip).length;
+        if (mine >= maxPendingPerIp || pending.size >= maxPending) {
+            client.sendText({ type: 'error', reason: 'busy' });
+            return client.close(4008);
+        }
+
+        const rid = nextRequestId++;
+        client.requesting = true;
+        clearTimeout(client.joinTimer);
+        const timer = setTimeout(() => {
+            pending.delete(rid);
+            client.sendText({ type: 'error', reason: 'timeout' });
+            client.close(4005);
+        }, approvalTimeoutMs);
+        timer.unref?.();
+        pending.set(rid, { client, timer, msg });
+
+        host.sendText({
+            type: 'join-request', rid,
+            name: String(msg.name ?? '').slice(0, 24),
+            deviceId: String(msg.deviceId ?? '').slice(0, 64),
+            ip: client.ip,
+        });
+        client.sendText({ type: 'waiting' });
     }
 
     function onViewerInput(client, payload) {
@@ -303,6 +380,7 @@ export function createRelay(options = {}) {
 
     function onViewerGone(client) {
         clearTimeout(client.joinTimer);
+        removePending(client);
         if (client.joined && viewers.get(client.id) === client) {
             viewers.delete(client.id);
             log('Espectador', client.id, 'desconnectat');
@@ -310,14 +388,34 @@ export function createRelay(options = {}) {
         }
     }
 
-    // Tanca connexions sense activitat (pestanyes mortes, Wi-Fi caigut)
+    // Cada `sweepMs`: tanca les connexions mortes i envia un ping a les vives. Els navegadors responen
+    // sols amb un pong, de manera que l'amfitrió no es desconnecta encara que no enviï res.
     const sweeper = setInterval(() => {
         const now = Date.now();
         for (const c of [host, ...viewers.values()]) {
-            if (c && now - c.lastSeen > idleTimeoutMs) c.close(1001);
+            if (!c) continue;
+            if (now - c.lastSeen > idleTimeoutMs) c.close(1001);
+            else c.write(OP.PING, Buffer.alloc(0));
         }
-    }, 10000);
+    }, sweepMs);
     sweeper.unref();
+
+    // ---------------------------------------------------------------- Detecció a la xarxa (UDP)
+    function startDiscovery() {
+        if (discoveryPort === null || discoveryPort === undefined) return;
+        try {
+            udp = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+            udp.on('error', () => { try { udp.close(); } catch (e) {} udp = null; });
+            udp.on('message', (data, rinfo) => {
+                if (!data.toString('utf8').startsWith('XCC-DISCOVER')) return;
+                const reply = JSON.stringify({ app: 'xcloud-catala', v: 1, name, port: listenPort, hostOnline: !!host });
+                udp?.send(reply, rinfo.port, rinfo.address);
+            });
+            udp.bind(discoveryPort);
+        } catch (e) {
+            udp = null; // sense detecció: es pot unir amb l'adreça escrita
+        }
+    }
 
     return {
         server,
@@ -327,16 +425,19 @@ export function createRelay(options = {}) {
                 server.once('error', reject);
                 server.listen(port, bindHost, () => {
                     listenPort = server.address().port;
+                    startDiscovery();
                     resolve(listenPort);
                 });
             });
         },
         close() {
             clearInterval(sweeper);
+            try { udp?.close(); } catch (e) {}
             for (const c of [host, ...viewers.values()]) c?.close(1001);
             return new Promise(resolve => server.close(() => resolve()));
         },
         get viewerCount() { return viewers.size; },
+        get discoveryPort() { try { return udp?.address().port ?? null; } catch (e) { return null; } },
         get hostConnected() { return !!host; },
     };
 }
@@ -350,8 +451,7 @@ if (isMain) {
         return i >= 0 ? args[i + 1] : fallback;
     };
 
-    const dir = fileURLToPath(new URL('.', import.meta.url));
-    const port = parseInt(arg('port', '8787'), 10);
+        const port = parseInt(arg('port', '8787'), 10);
     const pinArg = arg('pin', undefined);
     if (pinArg !== undefined && !/^\d{4,8}$/.test(pinArg)) {
         console.error('El PIN ha de tenir entre 4 i 8 xifres.');
@@ -372,7 +472,8 @@ if (isMain) {
         for (const u of lanUrls(p)) console.log(`  Espectadors:   ${u}`);
         console.log('\n  1) Deixa aquesta finestra oberta.');
         console.log('  2) A xCloud Català activa «Repetidor» i inicia la partida.');
-        console.log('  3) Als altres dispositius, obre l\'adreça i escriu el PIN.\n');
+        console.log('  3) Navegador: obre l\'adreça i escriu el PIN.');
+        console.log('     App d\'Android: tria «Unir-me a una partida»; apareixerà sol i l\'aproves a la pantalla.\n');
     }).catch(e => {
         console.error('No es pot iniciar el relé:', e.message);
         process.exit(1);

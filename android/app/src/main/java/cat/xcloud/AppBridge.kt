@@ -39,7 +39,7 @@ class AppBridge(private val activity: MainActivity, private val webView: WebView
     }
 
     // Relé de xarxa local (repetidor de la partida a altres dispositius)
-    private val relay = RelayServer({
+    private val relay = RelayServer(Build.MODEL ?: "Android", {
         activity.assets.open("relay-viewer.html").use { it.readBytes() }
     })
 

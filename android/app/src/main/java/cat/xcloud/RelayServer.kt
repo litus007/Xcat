@@ -3,39 +3,57 @@ package cat.xcloud
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedInputStream
+import java.io.ByteArrayOutputStream
 import java.io.IOException
+import java.net.DatagramPacket
+import java.net.DatagramSocket
 import java.net.Inet4Address
-import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.SocketAddress
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Relé de xarxa local (versió Android). Fa el mateix que `relay/relay.mjs` del PC i parla el mateix protocol:
+ * Relé de xarxa local (versió Android). Fa el mateix que `relay/relay.mjs` del PC i parla el mateix protocol
+ * (vegeu relay/PROTOCOL.md):
  *  - serveix la pàgina d'espectador a http://<IP-del-mòbil>:<port>
  *  - fa de senyalització WebRTC entre l'amfitrió (la pàgina d'xCloud dins del WebView) i els espectadors
  *  - reenvia els mandos dels espectadors a l'amfitrió
+ *  - respon a les sol·licituds de detecció UDP perquè altres dispositius el trobin sols
  *
- * Seguretat: l'amfitrió només es pot connectar des del mateix dispositiu i amb origen xbox.com;
- * els espectadors necessiten el PIN (amb bloqueig per força bruta) i han de venir de la pàgina pròpia.
+ * Seguretat: l'amfitrió només es pot connectar des del mateix dispositiu i amb origen xbox.com; els espectadors
+ * entren amb PIN (amb bloqueig per força bruta) o amb l'aprovació de qui té la pantalla davant.
  */
 class RelayServer(
+    private val deviceName: String,
     private val viewerHtml: () -> ByteArray,
     private val maxViewers: Int = 3,
 ) {
     companion object {
+        const val DISCOVERY_PORT = 8788
         private const val GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
         private const val HOST_ORIGIN = "https://www.xbox.com"
+        private const val APP_VIEWER_ORIGIN = "https://appassets.androidplatform.net"
         private const val INPUT_FRAME_SIZE = 26
         private const val MAX_PAYLOAD = 64 * 1024
         private const val MAX_FAILURES = 5
         private const val LOCK_MS = 60_000L
         private const val IDLE_TIMEOUT_MS = 30_000L
-        private const val JOIN_TIMEOUT_MS = 5_000
+        private const val SWEEP_MS = 10_000L
+        private const val JOIN_TIMEOUT_MS = 5_000L
+        private const val APPROVAL_TIMEOUT_MS = 30_000L
+        private const val MAX_PENDING_PER_IP = 2
+        private const val MAX_PENDING = 5
         private val MDNS = Regex("\\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.local\\b", RegexOption.IGNORE_CASE)
     }
 
@@ -43,10 +61,13 @@ class RelayServer(
 
     private inner class Client(val socket: Socket, val role: String) {
         @Volatile var id = 0
+        @Volatile var vsid = 0
         @Volatile var joined = false
+        @Volatile var requesting = false
         @Volatile var name = ""
         @Volatile var lastSeen = System.currentTimeMillis()
         @Volatile var closed = false
+        @Volatile var joinTimeout: ScheduledFuture<*>? = null
         val ip: String = stripV6(socket.inetAddress?.hostAddress ?: "")
         val localIp: String = stripV6(socket.localAddress?.hostAddress ?: "")
 
@@ -75,19 +96,27 @@ class RelayServer(
 
         fun close(code: Int = 1000) {
             if (closed) return
-            try {
-                write(0x8, byteArrayOf((code shr 8).toByte(), (code and 0xFF).toByte()))
-            } catch (e: Exception) {}
+            write(0x8, byteArrayOf((code shr 8).toByte(), (code and 0xFF).toByte()))
             closed = true
             try { socket.close() } catch (e: IOException) {}
         }
     }
 
+    private inner class Pending(val client: Client, val msg: JSONObject) {
+        @Volatile var timeout: ScheduledFuture<*>? = null
+    }
+
     private var server: ServerSocket? = null
+    private var udp: DatagramSocket? = null
+    private var scheduler: ScheduledExecutorService? = null
+
     @Volatile private var host: Client? = null
     private val viewers = ConcurrentHashMap<Int, Client>()
+    private val pending = ConcurrentHashMap<Int, Pending>()
     private val failures = ConcurrentHashMap<String, Failure>()
     private val random = SecureRandom()
+    private val joinCounter = AtomicInteger(0)
+    private val requestCounter = AtomicInteger(0)
 
     @Volatile var pin: String = ""
         private set
@@ -109,6 +138,9 @@ class RelayServer(
         server = socket
         port = socket.localPort
 
+        val exec = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "relay-scheduler").apply { isDaemon = true } }
+        scheduler = exec
+
         Thread({
             while (!socket.isClosed) {
                 try {
@@ -120,14 +152,15 @@ class RelayServer(
             }
         }, "relay-accept").apply { isDaemon = true }.start()
 
-        Thread({
-            while (!socket.isClosed) {
-                try { Thread.sleep(10_000) } catch (e: InterruptedException) { break }
-                val now = System.currentTimeMillis()
-                (listOfNotNull(host) + viewers.values).forEach { if (now - it.lastSeen > IDLE_TIMEOUT_MS) it.close(1001) }
+        // Cada SWEEP_MS: tanca les connexions mortes i envia un ping a les vives (el navegador respon amb un pong)
+        exec.scheduleAtFixedRate({
+            val now = System.currentTimeMillis()
+            (listOfNotNull(host) + viewers.values).forEach {
+                if (now - it.lastSeen > IDLE_TIMEOUT_MS) it.close(1001) else it.write(0x9, ByteArray(0))
             }
-        }, "relay-sweeper").apply { isDaemon = true }.start()
+        }, SWEEP_MS, SWEEP_MS, TimeUnit.MILLISECONDS)
 
+        startDiscovery()
         return port
     }
 
@@ -135,9 +168,14 @@ class RelayServer(
     fun stop() {
         (listOfNotNull(host) + viewers.values).forEach { it.close(1001) }
         viewers.clear()
+        pending.clear()
         host = null
+        try { udp?.close() } catch (e: Exception) {}
+        udp = null
         try { server?.close() } catch (e: IOException) {}
         server = null
+        scheduler?.shutdownNow()
+        scheduler = null
         port = 0
     }
 
@@ -152,6 +190,37 @@ class RelayServer(
             }
         } catch (e: Exception) {}
         return urls
+    }
+
+    // ---------------------------------------------------------------- Detecció a la xarxa (UDP)
+
+    private fun startDiscovery() {
+        try {
+            val sock = DatagramSocket(null as SocketAddress?).apply {
+                reuseAddress = true
+                bind(InetSocketAddress(DISCOVERY_PORT))
+            }
+            udp = sock
+            Thread({
+                val buf = ByteArray(256)
+                while (!sock.isClosed) {
+                    try {
+                        val packet = DatagramPacket(buf, buf.size)
+                        sock.receive(packet)
+                        val text = String(packet.data, 0, packet.length, Charsets.UTF_8)
+                        if (text.startsWith("XCC-DISCOVER")) {
+                            val reply = JSONObject().put("app", "xcloud-catala").put("v", 1).put("name", deviceName)
+                                .put("port", port).put("hostOnline", host != null).toString().toByteArray()
+                            sock.send(DatagramPacket(reply, reply.size, packet.address, packet.port))
+                        }
+                    } catch (e: IOException) {
+                        if (sock.isClosed) break
+                    }
+                }
+            }, "relay-discovery").apply { isDaemon = true }.start()
+        } catch (e: Exception) {
+            udp = null // sense detecció automàtica: es pot entrar escrivint l'adreça
+        }
     }
 
     // ---------------------------------------------------------------- HTTP / WebSocket
@@ -190,7 +259,7 @@ class RelayServer(
         var client: Client? = null
         try {
             socket.tcpNoDelay = true
-            socket.soTimeout = JOIN_TIMEOUT_MS * 2
+            socket.soTimeout = (JOIN_TIMEOUT_MS * 2).toInt()
             val input = BufferedInputStream(socket.getInputStream())
 
             val requestLine = readLine(input) ?: return
@@ -232,7 +301,8 @@ class RelayServer(
                 }
             } else {
                 val originHost = try { java.net.URI(origin ?: "").authority } catch (e: Exception) { null }
-                if (originHost == null || originHost != headers["host"]) {
+                val sameOrigin = originHost != null && originHost == headers["host"]
+                if (!sameOrigin && origin != APP_VIEWER_ORIGIN) {
                     respond(socket, "403 Forbidden", null, ByteArray(0)); return
                 }
             }
@@ -269,7 +339,7 @@ class RelayServer(
 
     private fun readLoop(input: BufferedInputStream, client: Client) {
         val header = ByteArray(2)
-        var fragments = java.io.ByteArrayOutputStream()
+        var fragments = ByteArrayOutputStream()
         var fragOpcode = 0
 
         while (true) {
@@ -302,8 +372,6 @@ class RelayServer(
             }
 
             // Text/binari amb possible fragmentació
-            val fullOpcode: Int
-            val full: ByteArray
             if (opcode != 0) {
                 if (fragments.size() > 0) throw IOException("protocol")
                 fragOpcode = opcode
@@ -313,9 +381,10 @@ class RelayServer(
             fragments.write(payload)
             if (fragments.size() > MAX_PAYLOAD) throw IOException("massa gran")
             if (!fin) continue
-            full = fragments.toByteArray()
-            fullOpcode = fragOpcode
-            fragments = java.io.ByteArrayOutputStream()
+
+            val full = fragments.toByteArray()
+            val fullOpcode = fragOpcode
+            fragments = ByteArrayOutputStream()
 
             if (fullOpcode == 0x1) {
                 val msg = try { JSONObject(String(full, Charsets.UTF_8)) } catch (e: Exception) { continue }
@@ -328,10 +397,12 @@ class RelayServer(
 
     // ---------------------------------------------------------------- Host
 
+    private fun viewerJson(v: Client) = JSONObject().put("id", v.id).put("name", v.name).put("vsid", v.vsid)
+
     private fun hello(): JSONObject {
         val list = JSONArray()
-        viewers.values.filter { it.joined }.forEach { list.put(JSONObject().put("id", it.id).put("name", it.name)) }
-        return JSONObject().put("type", "hello").put("pin", pin).put("urls", JSONArray(lanUrls()))
+        viewers.values.filter { it.joined }.forEach { list.put(viewerJson(it)) }
+        return JSONObject().put("type", "hello").put("name", deviceName).put("pin", pin).put("urls", JSONArray(lanUrls()))
             .put("maxViewers", maxViewers).put("viewers", list)
     }
 
@@ -340,7 +411,7 @@ class RelayServer(
         host = client
         client.sendText(hello())
         viewers.values.filter { it.joined }.forEach {
-            client.sendText(JSONObject().put("type", "viewer-joined").put("id", it.id).put("name", it.name))
+            client.sendText(viewerJson(it).put("type", "viewer-joined"))
             it.sendText(JSONObject().put("type", "host-online"))
         }
     }
@@ -357,6 +428,16 @@ class RelayServer(
                 val v = viewers[msg.optInt("to")]
                 if (v != null && v.joined) {
                     v.sendText(JSONObject().put("type", "signal").put("data", rewriteMdns(msg.opt("data"), v.localIp, "")))
+                }
+            }
+            "approve", "deny" -> {
+                val entry = pending.remove(msg.optInt("rid")) ?: return
+                entry.timeout?.cancel(false)
+                if (msg.optString("type") == "approve") {
+                    admit(entry.client, entry.msg)
+                } else {
+                    entry.client.sendText(JSONObject().put("type", "error").put("reason", "denied"))
+                    entry.client.close(4006)
                 }
             }
             "kick" -> viewers[msg.optInt("id")]?.let {
@@ -382,21 +463,57 @@ class RelayServer(
     }
 
     private fun onViewerConnected(client: Client) {
-        Thread({
-            try { Thread.sleep(JOIN_TIMEOUT_MS.toLong()) } catch (e: InterruptedException) {}
-            if (!client.joined) client.close(4002)
-        }, "relay-join-timeout").apply { isDaemon = true }.start()
+        client.joinTimeout = scheduler?.schedule({ if (!client.joined && !client.requesting) client.close(4002) },
+            JOIN_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+    }
+
+    /** Assigna identificador a l'espectador i l'incorpora a la sessió. */
+    private fun admit(client: Client, msg: JSONObject) {
+        if (client.joined || client.closed) return
+
+        var id = 0
+        synchronized(viewers) {
+            for (i in 1..maxViewers) if (!viewers.containsKey(i)) { id = i; break }
+            if (id != 0) {
+                client.id = id
+                client.vsid = joinCounter.incrementAndGet()
+                client.joined = true
+                client.name = msg.optString("name", "").take(24)
+                viewers[id] = client
+            }
+        }
+
+        if (id == 0) {
+            client.sendText(JSONObject().put("type", "error").put("reason", "full")); client.close(4004); return
+        }
+
+        client.joinTimeout?.cancel(false)
+        client.sendText(JSONObject().put("type", "joined").put("id", id).put("hostOnline", host != null))
+        host?.sendText(viewerJson(client).put("type", "viewer-joined"))
+    }
+
+    private fun removePending(client: Client) {
+        pending.entries.removeIf { (_, entry) ->
+            val mine = entry.client === client
+            if (mine) entry.timeout?.cancel(false)
+            mine
+        }
     }
 
     private fun onViewerMessage(client: Client, msg: JSONObject) {
         when (msg.optString("type")) {
             "join" -> {
-                if (client.joined) return
+                if (client.joined || client.requesting) return
+
+                val supplied = msg.optString("pin", "")
+                if (!msg.has("pin") || supplied.isEmpty()) {
+                    requestApproval(client, msg); return
+                }
+
                 if (isLocked(client.ip)) {
                     client.sendText(JSONObject().put("type", "error").put("reason", "locked")); client.close(4001); return
                 }
 
-                val supplied = msg.optString("pin", "")
                 if (!MessageDigest.isEqual(supplied.toByteArray(), pin.toByteArray())) {
                     val f = failures.getOrPut(client.ip) { Failure() }
                     f.count++
@@ -404,29 +521,46 @@ class RelayServer(
                     client.sendText(JSONObject().put("type", "error").put("reason", "pin")); client.close(4001); return
                 }
 
-                var id = 0
-                synchronized(viewers) {
-                    for (i in 1..maxViewers) if (!viewers.containsKey(i)) { id = i; break }
-                    if (id != 0) {
-                        client.id = id
-                        client.joined = true
-                        client.name = msg.optString("name", "").take(24)
-                        viewers[id] = client
-                    }
-                }
-                if (id == 0) {
-                    client.sendText(JSONObject().put("type", "error").put("reason", "full")); client.close(4004); return
-                }
-
                 failures.remove(client.ip)
-                client.sendText(JSONObject().put("type", "joined").put("id", id).put("hostOnline", host != null))
-                host?.sendText(JSONObject().put("type", "viewer-joined").put("id", id).put("name", client.name))
+                admit(client, msg)
             }
             "signal" -> if (client.joined) {
                 host?.sendText(JSONObject().put("type", "signal").put("from", client.id)
                     .put("data", rewriteMdns(msg.opt("data"), client.ip, "")))
             }
         }
+    }
+
+    /** Sense PIN: qui té la pantalla davant (l'amfitrió) ha d'aprovar l'espectador. */
+    private fun requestApproval(client: Client, msg: JSONObject) {
+        val h = host
+        if (h == null) {
+            client.sendText(JSONObject().put("type", "error").put("reason", "no-host")); client.close(4007); return
+        }
+
+        val mine = pending.values.count { it.client.ip == client.ip }
+        if (mine >= MAX_PENDING_PER_IP || pending.size >= MAX_PENDING) {
+            client.sendText(JSONObject().put("type", "error").put("reason", "busy")); client.close(4008); return
+        }
+
+        val rid = requestCounter.incrementAndGet()
+        client.requesting = true
+        client.joinTimeout?.cancel(false)
+
+        val entry = Pending(client, msg)
+        pending[rid] = entry
+        entry.timeout = scheduler?.schedule({
+            if (pending.remove(rid) != null) {
+                client.sendText(JSONObject().put("type", "error").put("reason", "timeout"))
+                client.close(4005)
+            }
+        }, APPROVAL_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+
+        h.sendText(JSONObject().put("type", "join-request").put("rid", rid)
+            .put("name", msg.optString("name", "").take(24))
+            .put("deviceId", msg.optString("deviceId", "").take(64))
+            .put("ip", client.ip))
+        client.sendText(JSONObject().put("type", "waiting"))
     }
 
     private fun onViewerInput(client: Client, payload: ByteArray) {
@@ -439,6 +573,8 @@ class RelayServer(
     }
 
     private fun onViewerGone(client: Client) {
+        client.joinTimeout?.cancel(false)
+        removePending(client)
         if (client.joined && viewers[client.id] === client) {
             viewers.remove(client.id)
             host?.sendText(JSONObject().put("type", "viewer-left").put("id", client.id))

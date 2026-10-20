@@ -64,33 +64,48 @@ El directori `android/` conté una app mínima (WebView) que carrega `xbox.com/p
 
 L'app implementa el pont `AppInterface`: ratolí i teclat natius (amb un servidor local només accessible des de l'app), captures a *Imatges/xCloud Català*, còpies a *Descàrregues*, vibració del dispositiu i dreceres a la pantalla d'inici.
 
+L'app té una pantalla d'inici amb dues opcions: *Jugar* (xCloud / la teva consola) i *Unir-me a una partida de la xarxa* (mode espectador).
+
 **Opció A, sense instal·lar l'SDK:** puja el projecte a un repositori teu de GitHub i executa l'acció *Construeix l'APK* (pestanya Actions). Descarrega l'APK de l'artefacte `xcloud-catala-apk` i instal·la'l al mòbil (cal permetre fonts desconegudes).
 
 **Opció B, en local:** compila primer l'script (`bun build.ts --version 1.0.0 --variant full`), obre la carpeta `android/` amb Android Studio i fes *Build → Build APK(s)*.
 
 ## Repetidor: veure la partida en més dispositius
 
-Un dispositiu (l'**amfitrió**) rep la partida de la consola o del núvol i la reenvia, per la xarxa local, a altres dispositius (**espectadors**) que només necessiten un navegador. Cada espectador pot jugar amb el seu mando, amb el mando tàctil o amb el teclat.
+Un dispositiu (l'**amfitrió**) rep la partida de la consola o del núvol i la reenvia, per la xarxa local, a altres dispositius (**espectadors**). Cada espectador pot jugar amb el seu mando, amb el mando tàctil o amb el teclat, i la consola els veu com a **jugadors reals** (2, 3 i 4) mentre l'amfitrió juga en remot.
 
 > Fes-ho servir amb la teva pròpia consola i amb persones de casa. Reenviar una sessió de Game Pass Cloud a altres persones pot incomplir les condicions de Microsoft.
 
+### Com s'hi entra
+- **Amb aprovació (recomanat):** l'espectador demana accés i a la pantalla de l'amfitrió apareix «Permet / Permet sempre / Rebutja». Amb «Permet sempre» aquell dispositiu entra sol la propera vegada.
+- **Amb PIN:** el PIN es veu a la píndola de sota a l'esquerra de la partida (i a la finestra del relé al PC).
+
 ### Amfitrió al PC
-1. Obre una terminal a la carpeta del projecte i executa `bun relay/relay.mjs` (o `bun run relay`). Mostra un **PIN** i l'adreça per als espectadors. Si Windows pregunta pel tallafoc, permet-ho a *Xarxes privades*.
+1. Obre una terminal a la carpeta del projecte i executa `bun relay/relay.mjs` (o `bun run relay`). Mostra el **PIN** i l'adreça. Si Windows pregunta pel tallafoc, permet-ho a *Xarxes privades* (necessita TCP 8787 i UDP 8788).
 2. A xbox.com/play, a Configuració → Transmissió → **Repetidor**, activa *Comparteix la partida amb altres dispositius*.
-3. Inicia la partida: durant uns segons es veu el PIN i l'adreça a baix a l'esquerra.
-4. Als altres dispositius, obre l'adreça (p. ex. `http://192.168.1.20:8787`), escriu el PIN i prem *Connecta*.
+3. Inicia la partida. Veuràs el PIN, l'adreça i, quan hi hagi espectadors, quants mandos envien dades (🎮).
 
 ### Amfitrió a Android (APK)
-No cal cap programa: el relé va dins de l'app. Activa el repetidor a la configuració, inicia la partida i usa l'adreça i el PIN que apareixen.
+No cal cap programa: el relé va dins de l'app. A la pantalla d'inici tria *Jugar*, activa el repetidor a la configuració i inicia la partida.
+
+### Espectador
+- **App d'Android:** a la pantalla d'inici tria **«Unir-me a una partida de la xarxa»**. Les partides apareixen soles (PC o mòbil amb el repetidor actiu); toca'n una i espera que l'amfitrió t'accepti. Els mandos físics funcionen directament.
+- **Qualsevol navegador:** obre l'adreça (p. ex. `http://192.168.1.20:8787`) i escriu el PIN, o prem *Demana accés*.
 
 ### Mandos dels espectadors
 - **Comparteixen el jugador 1** (per defecte): els mandos dels espectadors se sumen al del jugador 1.
-- **Un jugador per espectador**: cada espectador és un mando independent (jugadors 2, 3 i 4). Cal activar el *cooperatiu local* i que el joc l'admeti.
-- Els navegadors només exposen l'API de mandos en pàgines segures (HTTPS). Com que l'adreça local és HTTP, a l'espectador els **mandos físics** poden no funcionar. A Chrome/Edge es solucionen obrint `chrome://flags/#unsafely-treat-insecure-origin-as-secure`, afegint-hi l'adreça (`http://192.168.1.20:8787`), activant el flag i reiniciant el navegador. El mando tàctil i el teclat funcionen sempre.
+- **Un jugador per espectador**: cada espectador és un mando independent. L'script activa sol el *cooperatiu local* mentre hi ha espectadors i el torna a deixar com el tenies quan marxen. Que la consola ho accepti depèn del joc i de la consola: alguns jocs només admeten un mando en joc remot.
+- Als **navegadors** només es llegeixen mandos físics en pàgines segures (HTTPS); com que l'adreça local és HTTP, poden no funcionar. A Chrome/Edge es soluciona amb `chrome://flags/#unsafely-treat-insecure-origin-as-secure` (afegeix-hi l'adreça i reinicia). El mando tàctil i el teclat funcionen sempre, i a l'app d'Android els mandos físics funcionen sense res més.
+
+### Si no va
+- *L'amfitrió es desconnecta cada mig minut:* ja està corregit (el relé envia pings i l'amfitrió un batec). Si passa, mira que no tinguis una versió antiga del relé en marxa.
+- *Es veu però no se sent:* a l'espectador apareix un avís si l'àudio no arriba o arriba en silenci. Comprova que el joc té volum a l'amfitrió.
+- *No apareixen partides a l'app:* han d'estar a la mateixa Wi-Fi (sense «aïllament de clients») i el tallafoc ha de permetre UDP 8788; sempre pots escriure l'adreça.
+- *Els mandos no fan res:* a la píndola de l'amfitrió, 🎮 indica quants espectadors estan enviant dades. Si és 0, el problema és a l'espectador (permisos del navegador, vegeu dalt).
 
 ### Limitacions
 - L'amfitrió ha de tornar a codificar el vídeo per cada espectador: gasta CPU i bateria i afegeix una mica de latència. Al PC va bé; al mòbil, millor amb un o dos espectadors.
-- Només xarxa local (sense STUN/TURN). Algunes xarxes Wi-Fi amb «aïllament de clients» ho bloquegen.
+- Només xarxa local (sense STUN/TURN).
 - Si la pàgina d'xbox.com bloqueja la connexió a `ws://127.0.0.1` (CSP del navegador), la consola del navegador ho mostrarà. A l'APK no passa.
 - Protocol i mesures de seguretat: [`relay/PROTOCOL.md`](relay/PROTOCOL.md). Proves automàtiques: `npm run test:relay`.
 

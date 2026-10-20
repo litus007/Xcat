@@ -8,7 +8,7 @@ const XBOX = 'https://www.xbox.com';
 afterEach(() => { for (const s of openSockets) s.destroy(); openSockets.clear(); });
 
 async function setup(opts = {}) {
-    const relay = createRelay({ pin: '123456', urlsProvider: p => [`http://192.168.1.10:${p}`], viewerHtml: '<b>viewer</b>', ...opts });
+    const relay = createRelay({ pin: '123456', discoveryPort: null, urlsProvider: p => [`http://192.168.1.10:${p}`], viewerHtml: '<b>viewer</b>', ...opts });
     const port = await relay.listen(0, '127.0.0.1');
     return { relay, port };
 }
@@ -174,4 +174,108 @@ test('FrameParser: fragments, mides llargues i protocol', () => {
     assert.throws(() => new FrameParser({ requireMask: true }).push(encodeFrame(OP.TEXT, Buffer.from('x'), false)));
     // Massa gran
     assert.throws(() => new FrameParser({ maxPayload: 10 }).push(encodeFrame(OP.TEXT, Buffer.alloc(11), true)));
+});
+
+// ---------------------------------------------------------------- Novetats: pings, aprovació, detecció
+
+test('l\'amfitrió no es desconnecta per inactivitat si respon als pings (com un navegador)', async () => {
+    const { relay, port } = await setup({ sweepMs: 50, idleTimeoutMs: 250 });
+    const host = await connect(port, { role: 'host', origin: XBOX });
+    await host.json('hello');
+    await new Promise(r => setTimeout(r, 700));     // molt més que el temps d'espera
+    assert.equal(relay.hostConnected, true);
+    await relay.close();
+});
+
+test('una connexió que no respon als pings es tanca', async () => {
+    const { relay, port } = await setup({ sweepMs: 50, idleTimeoutMs: 250 });
+    const host = await connect(port, { role: 'host', origin: XBOX, autoPong: false });
+    await host.json('hello');
+    await until(() => !relay.hostConnected, 1500);
+    await relay.close();
+});
+
+async function until(fn, ms = 1500) { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (fn()) return; await new Promise(r => setTimeout(r, 10)); } throw new Error('until: timeout'); }
+
+test('sense PIN: l\'amfitrió aprova i l\'espectador entra', async () => {
+    const { relay, port } = await setup();
+    const origin = `http://127.0.0.1:${port}`;
+    const host = await connect(port, { role: 'host', origin: XBOX });
+    await host.json('hello');
+
+    const v = await connect(port, { role: 'viewer', origin });
+    v.sendJson({ type: 'join', name: 'Mòbil', deviceId: 'dev-1' });
+    await v.json('waiting');
+    const req = await host.json('join-request');
+    assert.deepEqual([req.name, req.deviceId, req.ip], ['Mòbil', 'dev-1', '127.0.0.1']);
+
+    host.sendJson({ type: 'approve', rid: req.rid });
+    assert.equal((await v.json('joined')).id, 1);
+    assert.equal((await host.json('viewer-joined')).name, 'Mòbil');
+    await relay.close();
+});
+
+test('sense PIN: l\'amfitrió rebutja, o no contesta, o no hi ha amfitrió', async () => {
+    const { relay, port } = await setup({ approvalTimeoutMs: 200 });
+    const origin = `http://127.0.0.1:${port}`;
+
+    // Sense amfitrió
+    const lonely = await connect(port, { role: 'viewer', origin });
+    lonely.sendJson({ type: 'join', name: 'x' });
+    assert.equal((await lonely.json('error')).reason, 'no-host');
+
+    const host = await connect(port, { role: 'host', origin: XBOX });
+    await host.json('hello');
+
+    // Rebutjat
+    const a = await connect(port, { role: 'viewer', origin });
+    a.sendJson({ type: 'join', name: 'a' });
+    const req = await host.json('join-request');
+    host.sendJson({ type: 'deny', rid: req.rid });
+    assert.equal((await a.json('error')).reason, 'denied');
+
+    // Sense resposta: caduca
+    const b = await connect(port, { role: 'viewer', origin });
+    b.sendJson({ type: 'join', name: 'b' });
+    await host.json('join-request');
+    assert.equal((await b.json('error')).reason, 'timeout');
+    assert.equal(relay.viewerCount, 0);
+    await relay.close();
+});
+
+test('sense PIN: límit de sol·licituds pendents per IP', async () => {
+    const { relay, port } = await setup({ maxPendingPerIp: 2 });
+    const origin = `http://127.0.0.1:${port}`;
+    const host = await connect(port, { role: 'host', origin: XBOX });
+    await host.json('hello');
+    const mk = async () => { const v = await connect(port, { role: 'viewer', origin }); v.sendJson({ type: 'join', name: 'n' }); return v; };
+    await mk(); await mk();
+    const third = await mk();
+    assert.equal((await third.json('error')).reason, 'busy');
+    await relay.close();
+});
+
+test('un viewer de l\'app d\'Android (origen intern) s\'accepta; un altre origen https no', async () => {
+    const { relay, port } = await setup();
+    assert.equal((await connect(port, { role: 'viewer', origin: 'https://appassets.androidplatform.net', hostHeader: `192.168.1.5:${port}` })).status(), 101);
+    assert.equal((await connect(port, { role: 'viewer', origin: 'https://example.com', hostHeader: `192.168.1.5:${port}` })).status(), 403);
+    await relay.close();
+});
+
+test('detecció UDP: respon a XCC-DISCOVER amb nom i port', async () => {
+    const dgram = await import('node:dgram');
+    const relay = createRelay({ pin: '123456', discoveryPort: 0, name: 'PC-Sala' });
+    const port = await relay.listen(0, '127.0.0.1');
+    const udpPort = await new Promise(async res => { for (let i = 0; i < 50; i++) { if (relay.discoveryPort) return res(relay.discoveryPort); await new Promise(r => setTimeout(r, 20)); } res(null); });
+    assert.ok(udpPort, 'el socket UDP ha de tenir port');
+
+    const client = dgram.createSocket('udp4');
+    const reply = await new Promise((resolve, reject) => {
+        client.on('message', m => resolve(JSON.parse(m.toString())));
+        client.send('XCC-DISCOVER', udpPort, '127.0.0.1');
+        setTimeout(() => reject(new Error('sense resposta')), 1500);
+    });
+    client.close();
+    assert.deepEqual([reply.app, reply.name, reply.port, reply.hostOnline], ['xcloud-catala', 'PC-Sala', port, false]);
+    await relay.close();
 });

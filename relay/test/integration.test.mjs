@@ -36,16 +36,26 @@ function buildEnv(relayPort, prefsOverride = {}) {
         close() { this.closed = true; }
         fire(n) { (this.listeners[n] || []).forEach(f => f({})); }
     }
-    class MockStream {}
+    class MockStream { constructor(tracks = []) { this.tracks = tracks; } getAudioTracks() { return this.tracks.filter(t => t.kind === 'audio'); } }
+    const coopCalls = [];
+    const audioInfo = { sinkMuted: null, ctxCreated: 0 };
+    class MockAudio { constructor() { audioInfo.sinkMuted = null; } set muted(v) { audioInfo.sinkMuted = v; } play() { return Promise.resolve(); } }
+    class MockAudioContext {
+        constructor() { audioInfo.ctxCreated++; }
+        createMediaStreamSource() { return { connect() {} }; }
+        createMediaStreamDestination() { return { stream: new MockStream([{ kind: 'audio', id: 'processed' }]) }; }
+        resume() { return Promise.resolve(); }
+        close() { audioInfo.closed = true; }
+    }
 
-    const source = { getReceivers: () => [{ track: { kind: 'video', readyState: 'live' } }, { track: { kind: 'audio', readyState: 'live' } }] };
+    const source = { getReceivers: () => [{ track: { kind: 'video', readyState: 'live', id: 'v-orig' } }, { track: { kind: 'audio', readyState: 'live', id: 'a-orig' } }] };
     const pillEl = { classList: { remove() {}, add() {} }, remove() { pillEl.removed = true; }, textContent: '' };
 
-    const win = { setTimeout, clearTimeout, performance, navigator: { getGamepads: () => [null, null, null, null] }, localStorage: { getItem: () => null, setItem() {} } };
+    const win = { setTimeout, clearTimeout, setInterval, clearInterval, performance, BX_EXPOSED: { toggleLocalCoOp: v => coopCalls.push(v) }, navigator: { getGamepads: () => [null, null, null, null] }, localStorage: (() => { const m = new Map(); return { getItem: k => m.get(k) ?? null, setItem: (k, v) => m.set(k, String(v)) }; })() };
     class XboxOriginWebSocket extends WebSocket {
         constructor(url) { super(url, { headers: { Origin: 'https://www.xbox.com' } }); }
     }
-    Object.assign(globalThis, { window: win, document: { documentElement: { appendChild() {} }, createElement() { return {}; } }, RTCPeerConnection: MockPC, MediaStream: MockStream });
+    Object.assign(globalThis, { window: win, document: { documentElement: { appendChild() {} }, createElement() { return {}; } }, RTCPeerConnection: MockPC, MediaStream: MockStream, Audio: MockAudio, AudioContext: MockAudioContext });
     Object.defineProperty(globalThis, 'navigator', { value: win.navigator, configurable: true, writable: true });
     win.WebSocket = XboxOriginWebSocket;
     globalThis.WebSocket = XboxOriginWebSocket;
@@ -54,12 +64,12 @@ function buildEnv(relayPort, prefsOverride = {}) {
         '@/enums/pref-keys': { GlobalPref: new Proxy({}, { get: (_, k) => ({
             RELAY_ENABLED: 'relay.enabled', RELAY_PORT: 'relay.port', RELAY_VIEWER_MODE: 'relay.viewerMode', RELAY_BITRATE: 'relay.bitrate',
             GAMEPAD_ADAPTER_ENABLED: 'gamepadAdapter.enabled', GAMEPAD_ADAPTER_SWAP_FACE: 'gamepadAdapter.swapFace', GAMEPAD_ADAPTER_DEADZONE: 'gamepadAdapter.deadzone' }[k]) }),
-            StorageKey: { GAMEPAD_PROFILES: 'p' } },
+            StorageKey: { GAMEPAD_PROFILES: 'p' }, StreamPref: { LOCAL_CO_OP_ENABLED: 'localCoOp.enabled' } },
         '@utils/bx-event-bus': { BxEventBus: { Stream: { on: (e, f) => { handlers[e] = f; } } } },
         '@utils/bx-logger': { BxLogger: { info() {}, warning() {}, error(...a) { console.error('[ERR]', ...a); } } },
         '@utils/global': { AppInterface: null, STATES: { currentStream: { peerConnection: source } } },
         '@utils/html': { CE: () => pillEl },
-        '@utils/pref-utils': { getGlobalPref: k => prefs[k] },
+        '@utils/pref-utils': { getGlobalPref: k => prefs[k], getStreamPref: () => false },
         '@utils/toast': { Toast: { show: (...a) => toasts.push(a) } },
         '@utils/translation': { t: (k, v) => k + (v ? ':' + JSON.stringify(v) : '') },
         '@utils/bx-event': { BxEvent: { dispatch: (_t, name, data) => events.push([name, data.gamepad.id, data.gamepad.index]) } },
@@ -70,7 +80,7 @@ function buildEnv(relayPort, prefsOverride = {}) {
     const { RelayHost } = load('relay/relay-host.ts');
     const adapter = adapterMod.GamepadAdapter.getInstance();
     adapter.install();
-    return { RelayHost, adapter, handlers, events, toasts, pcs, prefs, pillEl };
+    return { RelayHost, adapter, handlers, events, toasts, pcs, prefs, pillEl, coopCalls, audioInfo };
 }
 
 const frame = (buttons = {}, axes = [0, 0, 0, 0]) => {
@@ -175,4 +185,159 @@ test('quan no hi ha espectadors no es toca la llista de mandos', async () => {
     const env = buildEnv(1, { 'relay.enabled': false });
     assert.deepEqual(navigator.getGamepads(), [null, null, null, null]);
     env.handlers['state.playing']?.();
+});
+
+// ---------------------------------------------------------------- Casos reals que han fallat
+
+test('àudio: s\'envia la pista processada per WebAudio (no la remota directa) i el vídeo és el de la consola', async () => {
+    const relay = createRelay({ pin: '222222', discoveryPort: null });
+    const port = await relay.listen(0, '127.0.0.1');
+    const env = buildEnv(port);
+    env.RelayHost.getInstance().setup();
+    env.handlers['state.playing']();
+    await until(() => relay.hostConnected);
+
+    const v = await connect(port, { role: 'viewer', origin: `http://127.0.0.1:${port}` });
+    v.sendJson({ type: 'join', pin: '222222' });
+    await v.json('joined');
+    const offer = await v.json('signal');
+    assert.ok(offer.data.sid, 'l\'oferta porta un identificador de sessió');
+
+    const pc = env.pcs[0];
+    assert.deepEqual(pc.tracks.map(t => t.id), ['v-orig', 'processed']);
+    assert.equal(env.audioInfo.sinkMuted, true, 'el <audio> auxiliar està mut');
+
+    env.handlers['state.stopped']();
+    assert.equal(env.audioInfo.closed, true, 'en aturar, es tanca l\'AudioContext');
+    await relay.close();
+});
+
+test('mando virtual/remot: l\'esdeveniment "gamepadconnected" surt de seguida, sense esperar cap sondeig', async () => {
+    const relay = createRelay({ pin: '333333', discoveryPort: null });
+    const port = await relay.listen(0, '127.0.0.1');
+    const env = buildEnv(port, { 'relay.viewerMode': 'shared' });
+    env.RelayHost.getInstance().setup();
+    env.handlers['state.playing']();
+    await until(() => relay.hostConnected);
+
+    const v = await connect(port, { role: 'viewer', origin: `http://127.0.0.1:${port}` });
+    v.sendJson({ type: 'join', pin: '333333' });
+    await v.json('joined');
+    v.sendBinary(frame({ 0: 255 }));
+
+    // Important: NO es crida navigator.getGamepads(); xCloud no sondeja fins que veu un mando connectat
+    await until(() => env.events.some(e => e[0] === 'gamepadconnected'));
+    assert.ok(env.events[0][1].includes('xCloud Català Pad'));
+
+    // Quan l'espectador marxa, el mando es desconnecta
+    v.socket.destroy();
+    await until(() => env.events.some(e => e[0] === 'gamepaddisconnected'));
+    env.handlers['state.stopped']();
+    await relay.close();
+});
+
+test('mode jugadors: s\'habilita el cooperatiu local abans de connectar i es restaura en marxar', async () => {
+    const relay = createRelay({ pin: '444444', discoveryPort: null });
+    const port = await relay.listen(0, '127.0.0.1');
+    const env = buildEnv(port, { 'relay.viewerMode': 'players' });
+    env.RelayHost.getInstance().setup();
+    env.handlers['state.playing']();
+    await until(() => relay.hostConnected);
+
+    const v = await connect(port, { role: 'viewer', origin: `http://127.0.0.1:${port}` });
+    v.sendJson({ type: 'join', pin: '444444' });
+    await v.json('joined');
+    v.sendBinary(frame({ 0: 255 }));
+    await until(() => env.events.some(e => e[0] === 'gamepadconnected'));
+
+    assert.deepEqual(env.coopCalls, [true], 'primer s\'activa el cooperatiu');
+    assert.equal(env.events[0][2], 0, 'primer espectador = ranura 0 (si no hi ha cap mando físic)');
+
+    v.socket.destroy();
+    await until(() => env.adapter.remotes.size === 0);
+    assert.deepEqual(env.coopCalls, [true, false], 'en marxar el darrer, es torna al valor de l\'usuari');
+    env.handlers['state.stopped']();
+    await relay.close();
+});
+
+test('aprovació des de la pantalla de l\'amfitrió; "Permet sempre" recorda el dispositiu', async () => {
+    const relay = createRelay({ discoveryPort: null });
+    const port = await relay.listen(0, '127.0.0.1');
+    const env = buildEnv(port);
+    const host = env.RelayHost.getInstance();
+    const asked = [];
+    host.askApproval = async req => { asked.push(req); return 'always'; };
+    host.setup();
+    env.handlers['state.playing']();
+    await until(() => relay.hostConnected);
+
+    const origin = `http://127.0.0.1:${port}`;
+    const a = await connect(port, { role: 'viewer', origin });
+    a.sendJson({ type: 'join', name: 'Tauleta', deviceId: 'dev-A' });
+    assert.equal((await a.json('joined')).id, 1);
+    assert.deepEqual([asked.length, asked[0].name, asked[0].deviceId], [1, 'Tauleta', 'dev-A']);
+
+    // Segona vegada amb el mateix dispositiu: entra sense preguntar
+    a.socket.destroy();
+    await until(() => relay.viewerCount === 0);
+    const b = await connect(port, { role: 'viewer', origin });
+    b.sendJson({ type: 'join', name: 'Tauleta', deviceId: 'dev-A' });
+    assert.equal((await b.json('joined')).id, 1);
+    assert.equal(asked.length, 1, 'no s\'ha tornat a preguntar');
+
+    // Dispositiu desconegut: sí que pregunta
+    const c = await connect(port, { role: 'viewer', origin });
+    c.sendJson({ type: 'join', name: 'Mòbil', deviceId: 'dev-B' });
+    await c.json('joined');
+    assert.equal(asked.length, 2);
+
+    env.handlers['state.stopped']();
+    await relay.close();
+});
+
+test('si cau la senyalització, la connexió WebRTC sana es conserva (no es perd la imatge)', async () => {
+    const relay = createRelay({ pin: '555555', discoveryPort: null });
+    const port = await relay.listen(0, '127.0.0.1');
+    const env = buildEnv(port);
+    const host = env.RelayHost.getInstance();
+    host.setup();
+    env.handlers['state.playing']();
+    await until(() => relay.hostConnected);
+
+    const v = await connect(port, { role: 'viewer', origin: `http://127.0.0.1:${port}` });
+    v.sendJson({ type: 'join', pin: '555555' });
+    await v.json('joined');
+    await v.json('signal');
+    assert.equal(env.pcs.length, 1);
+    env.pcs[0].connectionState = 'connected';           // el vídeo ja arriba a l'espectador
+
+    // Cau només la connexió amb el relé (el WebRTC és directe)
+    host.ws.close();
+    await v.json('host-offline');
+    await until(() => relay.hostConnected, 7000);       // reconnecta sol als 4 s
+    await v.json('host-online');
+    await sleep(100);
+
+    assert.equal(env.pcs.length, 1, 'no s\'ha creat una connexió nova');
+    assert.equal(env.pcs[0].closed, undefined, 'la connexió antiga segueix oberta');
+    env.handlers['state.stopped']();
+    await relay.close();
+});
+
+test('mando digital en pantalla: també es connecta de seguida, i no si ja hi ha un mando físic', async () => {
+    const env = buildEnv(1, { 'relay.enabled': false });
+    env.adapter.setVirtualActive(true);
+    assert.deepEqual(env.events.map(e => e[0]), ['gamepadconnected']);
+    env.adapter.setVirtualActive(false);
+    assert.deepEqual(env.events.map(e => e[0]), ['gamepadconnected', 'gamepaddisconnected']);
+
+    // Amb un mando físic estàndard ja connectat, es fusiona (no es crea un mando nou)
+    const physical = { id: 'Xbox (STANDARD GAMEPAD)', index: 0, connected: true, mapping: 'standard', timestamp: 1, axes: [0, 0, 0, 0], buttons: new Array(17).fill(null).map(() => ({ pressed: false, value: 0 })) };
+    navigator.getGamepads = () => [physical, null, null, null];
+    env.adapter.nativeGetGamepads = () => [physical, null, null, null];
+    env.events.length = 0;
+    env.adapter.setVirtualActive(true);
+    assert.deepEqual(env.events, []);
+    env.adapter.virtual.buttons[0] = 1;
+    assert.equal(env.adapter.patchedGetGamepads()[0].buttons[0].pressed, true);
 });
