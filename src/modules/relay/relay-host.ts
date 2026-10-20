@@ -403,10 +403,18 @@ export class RelayHost {
             return;
         }
 
-        existing && this.closePeer(existing);
+        // Reconnexió o nou espectador: neteja l'estat antic (mando virtual, WebRTC)
+        // perquè no quedi un mando duplicat ni un peer mort
+        if (existing) {
+            this.closePeer(existing);
+            this.peers.delete(id);
+        }
+        // Sempre treu el mando remot associat a aquest id (per si va quedar residual)
+        this.adapter.removeRemote(id);
 
         const source = STATES.currentStream.peerConnection;
         if (!source) {
+            BxLogger.warning(this.LOG_TAG, 'Sense peerConnection de l\'stream; no es pot crear l\'oferta WebRTC');
             return;
         }
 
@@ -414,6 +422,14 @@ export class RelayHost {
         const sid = Math.random().toString(36).slice(2, 10);
         const peer: Peer = { id, name, sid, vsid, pc, pendingCandidates: [], hasRemoteDescription: false };
         this.peers.set(id, peer);
+
+        const label = name || `Jugador ${id + 1}`;
+        Toast.show(t('remote-play') || 'Repetidor', `${label} s'ha unit`, { instant: true });
+        BxLogger.info(this.LOG_TAG, `viewer-joined id=${id} vsid=${vsid} name=${name}`);
+
+        // Reserva de seguida la ranura del mando (mode jugadors) perquè la consola
+        // vegi el nou jugador abans que arribi el primer fotograma d'entrada
+        this.adapter.setRemoteInput(id, new Array(17).fill(0), [0, 0, 0, 0]);
 
         const stream = new MediaStream();
         const video = source.getReceivers().map(r => r.track).find(tr => tr?.kind === 'video' && tr.readyState === 'live');
