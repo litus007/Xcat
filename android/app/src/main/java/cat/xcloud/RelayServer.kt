@@ -48,8 +48,9 @@ class RelayServer(
         private const val MAX_PAYLOAD = 64 * 1024
         private const val MAX_FAILURES = 5
         private const val LOCK_MS = 60_000L
-        private const val IDLE_TIMEOUT_MS = 30_000L
-        private const val SWEEP_MS = 10_000L
+        private const val IDLE_TIMEOUT_MS = 30_000L           // amfitrió
+        private const val VIEWER_IDLE_TIMEOUT_MS = 15_000L    // espectadors: envien dades cada ~250 ms
+        private const val SWEEP_MS = 5_000L
         private const val JOIN_TIMEOUT_MS = 5_000L
         private const val APPROVAL_TIMEOUT_MS = 30_000L
         private const val MAX_PENDING_PER_IP = 2
@@ -65,6 +66,7 @@ class RelayServer(
         @Volatile var joined = false
         @Volatile var requesting = false
         @Volatile var name = ""
+        @Volatile var deviceId = ""
         @Volatile var lastSeen = System.currentTimeMillis()
         @Volatile var closed = false
         @Volatile var joinTimeout: ScheduledFuture<*>? = null
@@ -156,7 +158,8 @@ class RelayServer(
         exec.scheduleAtFixedRate({
             val now = System.currentTimeMillis()
             (listOfNotNull(host) + viewers.values).forEach {
-                if (now - it.lastSeen > IDLE_TIMEOUT_MS) it.close(1001) else it.write(0x9, ByteArray(0))
+                val limit = if (it.role == "host") IDLE_TIMEOUT_MS else VIEWER_IDLE_TIMEOUT_MS
+                if (now - it.lastSeen > limit) it.close(1001) else it.write(0x9, ByteArray(0))
             }
         }, SWEEP_MS, SWEEP_MS, TimeUnit.MILLISECONDS)
 
@@ -467,9 +470,24 @@ class RelayServer(
             JOIN_TIMEOUT_MS, TimeUnit.MILLISECONDS)
     }
 
+    /** Un dispositiu només pot tenir una sessió: si torna a entrar, la sessió antiga (potser morta) se substitueix. */
+    private fun replaceDuplicates(client: Client, deviceId: String) {
+        if (deviceId.isEmpty()) return
+        viewers.values.filter { it !== client && it.joined && it.deviceId == deviceId }.forEach { old ->
+            viewers.remove(old.id)
+            old.joined = false // així onViewerGone no avisa dues vegades
+            host?.sendText(JSONObject().put("type", "viewer-left").put("id", old.id)) // l'amfitrió neteja connexió i mando virtual
+            old.sendText(JSONObject().put("type", "error").put("reason", "replaced"))
+            old.close(4009)
+        }
+    }
+
     /** Assigna identificador a l'espectador i l'incorpora a la sessió. */
     private fun admit(client: Client, msg: JSONObject) {
         if (client.joined || client.closed) return
+
+        client.deviceId = msg.optString("deviceId", "").take(64)
+        replaceDuplicates(client, client.deviceId)
 
         var id = 0
         synchronized(viewers) {

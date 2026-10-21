@@ -279,3 +279,46 @@ test('detecció UDP: respon a XCC-DISCOVER amb nom i port', async () => {
     assert.deepEqual([reply.app, reply.name, reply.port, reply.hostOnline], ['xcloud-catala', 'PC-Sala', port, false]);
     await relay.close();
 });
+
+test('el mateix dispositiu que torna a entrar substitueix la sessió antiga (no queda un espectador repetit)', async () => {
+    const { relay, port } = await setup();
+    const origin = `http://127.0.0.1:${port}`;
+    const host = await connect(port, { role: 'host', origin: XBOX });
+    await host.json('hello');
+
+    const old = await connect(port, { role: 'viewer', origin });
+    old.sendJson({ type: 'join', pin: '123456', name: 'Mòbil', deviceId: 'dev-X' });
+    assert.equal((await old.json('joined')).id, 1);
+    const first = await host.json('viewer-joined');
+
+    // El mòbil perd la Wi-Fi sense tancar res i torna a entrar: l'antiga sessió encara és "viva" al relé
+    const fresh = await connect(port, { role: 'viewer', origin });
+    fresh.sendJson({ type: 'join', pin: '123456', name: 'Mòbil', deviceId: 'dev-X' });
+    assert.equal((await fresh.json('joined')).id, 1, 'reutilitza l\'identificador (no n\'agafa un altre)');
+
+    assert.equal((await old.json('error')).reason, 'replaced');
+    const left = await host.json('viewer-left');
+    assert.equal(left.id, 1);
+    const second = await host.json('viewer-joined');
+    assert.equal(second.id, 1);
+    assert.notEqual(second.vsid, first.vsid, 'és una unió nova');
+    assert.equal(relay.viewerCount, 1);
+
+    // Un altre dispositiu no queda afectat
+    const other = await connect(port, { role: 'viewer', origin });
+    other.sendJson({ type: 'join', pin: '123456', name: 'Tauleta', deviceId: 'dev-Y' });
+    assert.equal((await other.json('joined')).id, 2);
+    assert.equal(relay.viewerCount, 2);
+    await relay.close();
+});
+
+test('un espectador mort (sense FIN) deixa de comptar aviat gràcies als pings', async () => {
+    const { relay, port } = await setup({ sweepMs: 50, viewerIdleTimeoutMs: 250, idleTimeoutMs: 5000 });
+    const origin = `http://127.0.0.1:${port}`;
+    const v = await connect(port, { role: 'viewer', origin, autoPong: false });
+    v.sendJson({ type: 'join', pin: '123456' });
+    await v.json('joined');
+    assert.equal(relay.viewerCount, 1);
+    await until(() => relay.viewerCount === 0, 1500);
+    await relay.close();
+});

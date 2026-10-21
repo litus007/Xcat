@@ -54,8 +54,9 @@ export function createRelay(options = {}) {
         log = () => {},
         urlsProvider = lanUrls,
         joinTimeoutMs = 5000,
-        idleTimeoutMs = 30000,
-        sweepMs = 10000,
+        idleTimeoutMs = 30000,          // amfitrió
+        viewerIdleTimeoutMs = 15000,    // espectadors: envien dades cada ~250 ms, així es detecten abans els morts
+        sweepMs = 5000,
         maxFailures = 5,
         lockMs = 60000,
         // L'app d'Android carrega la pàgina d'espectador des d'aquest origen intern (context segur -> mandos)
@@ -279,8 +280,26 @@ export function createRelay(options = {}) {
     }
 
     /** Assigna identificador a l'espectador i l'incorpora a la sessió. */
+    /** Un dispositiu només pot tenir una sessió: si torna a entrar, la sessió antiga (potser morta) se substitueix. */
+    function replaceDuplicates(client, deviceId) {
+        if (!deviceId) return;
+        for (const old of [...viewers.values()]) {
+            if (old !== client && old.joined && old.deviceId === deviceId) {
+                viewers.delete(old.id);
+                old.joined = false;                                   // així onViewerGone no avisa dues vegades
+                host?.sendText({ type: 'viewer-left', id: old.id });  // l'amfitrió neteja connexió i mando virtual
+                old.sendText({ type: 'error', reason: 'replaced' });
+                old.close(4009);
+                log('Espectador', old.id, 'substituït (mateix dispositiu)');
+            }
+        }
+    }
+
     function admit(client, msg) {
         if (client.joined || client.closed) return;
+
+        client.deviceId = String(msg.deviceId ?? '').slice(0, 64);
+        replaceDuplicates(client, client.deviceId);
 
         let id = 0;
         for (let i = 1; i <= maxViewers; i++) if (!viewers.has(i)) { id = i; break; }
@@ -394,7 +413,8 @@ export function createRelay(options = {}) {
         const now = Date.now();
         for (const c of [host, ...viewers.values()]) {
             if (!c) continue;
-            if (now - c.lastSeen > idleTimeoutMs) c.close(1001);
+            const limit = c.role === 'host' ? idleTimeoutMs : viewerIdleTimeoutMs;
+            if (now - c.lastSeen > limit) c.close(1001);
             else c.write(OP.PING, Buffer.alloc(0));
         }
     }, sweepMs);

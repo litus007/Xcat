@@ -52,6 +52,7 @@ video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: contai
 <video id="v" autoplay playsinline class="hidden"></video>
 <div id="status" class="hide"></div>
 <div id="bar" class="hidden">
+  <button class="ghost hidden" id="unmute" title="Activa el so">🔊</button>
   <button class="ghost" id="bPad" title="Mostra/amaga el mando tàctil">🎮</button>
   <button class="ghost" id="bFs" title="Pantalla completa">⛶</button>
   <button class="ghost" id="bLeave" title="Surt">✖</button>
@@ -94,7 +95,7 @@ function connect() {
   const secure = location.protocol === 'https:' && !params.get('host');
   ws = new WebSocket((secure ? 'wss://' : 'ws://') + target + '/ws?role=viewer');
   ws.binaryType = 'arraybuffer';
-  ws.onopen = () => ws.send(JSON.stringify(mode === 'pin' ? { type: 'join', pin, name } : { type: 'join', name, deviceId }));
+  ws.onopen = () => ws.send(JSON.stringify(mode === 'pin' ? { type: 'join', pin, name, deviceId } : { type: 'join', name, deviceId }));
   ws.onmessage = e => { if (typeof e.data === 'string') onMessage(JSON.parse(e.data)); };
   ws.onclose = () => {
     joined = false; closePeer();
@@ -119,7 +120,7 @@ function onMessage(m) {
     case 'error': {
       stopped = true; myId = 0;
       const text = { pin: 'PIN incorrecte', locked: 'Massa intents. Torna-ho a provar d\'aquí a un minut', full: 'No hi ha més places d\'espectador', kicked: 'L\'amfitrió t\'ha expulsat',
-        denied: 'L\'amfitrió ha rebutjat l\'accés', timeout: 'L\'amfitrió no ha respost a temps', 'no-host': 'Ningú està compartint ara mateix. Inicia la partida a l\'amfitrió i torna-ho a provar', busy: 'Massa sol·licituds pendents' }[m.reason] || 'Error de connexió';
+        denied: 'L\'amfitrió ha rebutjat l\'accés', replaced: 'Has entrat des d\'una altra finestra d\'aquest dispositiu', timeout: 'L\'amfitrió no ha respost a temps', 'no-host': 'Ningú està compartint ara mateix. Inicia la partida a l\'amfitrió i torna-ho a provar', busy: 'Massa sol·licituds pendents' }[m.reason] || 'Error de connexió';
       closePeer(); showJoin(text); break;
     }
   }
@@ -153,7 +154,7 @@ function createPeer() {
     const v = $('v');
     if (v.srcObject !== e.streams[0]) v.srcObject = e.streams[0];
     try { e.receiver.jitterBufferTarget = 0; } catch (_) {}
-    v.play().then(() => setStatus('▶ Connectat')).catch(() => setStatus('Toca la pantalla per activar el so', true));
+    startPlayback();
   };
   pc.onconnectionstatechange = () => {
     if (pc?.connectionState === 'failed') setStatus('No es pot rebre el vídeo (xarxa o tallafoc)', true);
@@ -177,7 +178,19 @@ setInterval(async () => {
   } catch (_) {}
 }, 2000);
 
-$('v').addEventListener('click', () => { $('v').play().catch(() => {}); $('bar').classList.toggle('hide'); });
+// Reproducció: si el navegador bloqueja l'autoplay amb so (p. ex. en tornar a entrar), es reprodueix mut
+// i es mostra un botó per activar el so. Això evita la pantalla grisa amb el botó de "play".
+function startPlayback() {
+  const v = $('v');
+  v.play().then(() => { setStatus('▶ Connectat'); $('unmute').classList.toggle('hidden', !v.muted); })
+    .catch(() => {
+      v.muted = true;
+      v.play().then(() => { setStatus('▶ Connectat · toca 🔊 per activar el so', true); $('unmute').classList.remove('hidden'); })
+        .catch(() => setStatus('Toca la pantalla per iniciar el vídeo', true));
+    });
+}
+$('unmute').onclick = () => { const v = $('v'); v.muted = false; v.play().catch(() => {}); $('unmute').classList.add('hidden'); setStatus('🔊 So activat'); };
+$('v').addEventListener('click', () => { const v = $('v'); if (v.paused) startPlayback(); $('bar').classList.toggle('hide'); });
 
 // ------------------------------------------------------------ Entrada: mando físic, tàctil i teclat
 const touch = { b: new Array(17).fill(0), a: [0, 0, 0, 0] };

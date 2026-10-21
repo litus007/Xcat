@@ -94,13 +94,14 @@ No cal cap programa: el relé va dins de l'app. A la pantalla d'inici tria *Juga
 
 ### Mandos dels espectadors
 - **Comparteixen el jugador 1** (per defecte): els mandos dels espectadors se sumen al del jugador 1.
-- **Un jugador per espectador**: cada espectador és un mando independent. L'script activa sol el *cooperatiu local* mentre hi ha espectadors i el torna a deixar com el tenies quan marxen. Que la consola ho accepti depèn del joc i de la consola: alguns jocs només admeten un mando en joc remot.
+- **Un jugador per espectador**: cada espectador és un mando independent. **La ranura 0 (jugador 1) és sempre de l'amfitrió**; els espectadors són els jugadors 2, 3 i 4. L'script activa sol el *cooperatiu local* mentre hi ha espectadors i el torna a deixar com el tenies quan marxen. Que la consola ho accepti depèn del joc i de la consola: alguns jocs només admeten un mando en joc remot.
 - Als **navegadors** només es llegeixen mandos físics en pàgines segures (HTTPS); com que l'adreça local és HTTP, poden no funcionar. A Chrome/Edge es soluciona amb `chrome://flags/#unsafely-treat-insecure-origin-as-secure` (afegeix-hi l'adreça i reinicia). El mando tàctil i el teclat funcionen sempre, i a l'app d'Android els mandos físics funcionen sense res més.
 
 ### Si no va
 - *L'amfitrió es desconnecta cada mig minut:* ja està corregit (el relé envia pings i l'amfitrió un batec). Si passa, mira que no tinguis una versió antiga del relé en marxa.
 - *Es veu però no se sent:* a l'espectador apareix un avís si l'àudio no arriba o arriba en silenci. Comprova que el joc té volum a l'amfitrió.
 - *No apareixen partides a l'app:* han d'estar a la mateixa Wi-Fi (sense «aïllament de clients») i el tallafoc ha de permetre UDP 8788; sempre pots escriure l'adreça.
+- *Un espectador surt repetit o es veu gris en tornar a entrar:* un dispositiu només pot tenir una sessió; si torna a entrar, substitueix l'antiga. Si el vídeo no arrenca amb so, es reprodueix mut i apareix un botó 🔊.
 - *Els mandos no fan res:* a la píndola de l'amfitrió, 🎮 indica quants espectadors estan enviant dades. Si és 0, el problema és a l'espectador (permisos del navegador, vegeu dalt).
 
 ### Limitacions

@@ -158,11 +158,13 @@ test('mode un jugador per espectador: ranures i esdeveniments de connexió', asy
     await until(() => env.adapter.remotes.size === 2);
 
     const pads = navigator.getGamepads();
-    assert.equal(pads[0].id.endsWith('Remote 1'), true);
-    assert.equal(pads[1].id.endsWith('Remote 2'), true);
-    assert.equal(pads[0].buttons[1].pressed, true);
-    assert.equal(pads[1].buttons[2].pressed, true);
-    assert.deepEqual(env.events.filter(e => e[0] === 'gamepadconnected').map(e => [e[1].slice(-8), e[2]]), [['Remote 1', 0], ['Remote 2', 1]]);
+    // La ranura 0 és de l'amfitrió: els espectadors són els jugadors 2 i 3
+    assert.equal(pads[0], null);
+    assert.equal(pads[1].id.endsWith('Remote 1'), true);
+    assert.equal(pads[2].id.endsWith('Remote 2'), true);
+    assert.equal(pads[1].buttons[1].pressed, true);
+    assert.equal(pads[2].buttons[2].pressed, true);
+    assert.deepEqual(env.events.filter(e => e[0] === 'gamepadconnected').map(e => [e[1].slice(-8), e[2]]), [['Remote 1', 1], ['Remote 2', 2]]);
 
     a.socket.destroy();
     await until(() => env.adapter.remotes.size === 1);
@@ -251,7 +253,7 @@ test('mode jugadors: s\'habilita el cooperatiu local abans de connectar i es res
     await until(() => env.events.some(e => e[0] === 'gamepadconnected'));
 
     assert.deepEqual(env.coopCalls, [true], 'primer s\'activa el cooperatiu');
-    assert.equal(env.events[0][2], 0, 'primer espectador = ranura 0 (si no hi ha cap mando físic)');
+    assert.equal(env.events[0][2], 1, 'primer espectador = jugador 2 (ranura 1): la 0 és de l\'amfitrió');
 
     v.socket.destroy();
     await until(() => env.adapter.remotes.size === 0);
@@ -340,4 +342,122 @@ test('mando digital en pantalla: també es connecta de seguida, i no si ja hi ha
     assert.deepEqual(env.events, []);
     env.adapter.virtual.buttons[0] = 1;
     assert.equal(env.adapter.patchedGetGamepads()[0].buttons[0].pressed, true);
+});
+
+// ---------------------------------------------------------------- Ranures: l'amfitrió és sempre el jugador 1
+
+const connectedRemotes = () => navigator.getGamepads().filter(g => g?.connected && g.id.includes('Remote'));
+const idle = new Array(17).fill(0), noAxes = [0, 0, 0, 0];
+
+test('mode jugadors: els espectadors són els jugadors 2, 3 i 4; la ranura 0 és de l\'amfitrió (mando digital)', async () => {
+    const env = buildEnv(1, { 'relay.enabled': false, 'relay.viewerMode': 'players' });
+    env.adapter.setVirtualActive(true);                          // l'amfitrió juga amb el mando digital (ranura 0)
+    env.adapter.virtual.buttons[0] = 1;
+
+    env.adapter.setRemoteInput(1, idle, noAxes);
+    env.adapter.setRemoteInput(2, idle, noAxes);
+    env.adapter.setRemoteInput(3, idle, noAxes);
+
+    const pads = navigator.getGamepads();
+    assert.equal(pads[0].id, 'xCloud Català Pad', 'la ranura 0 segueix sent el mando de l\'amfitrió');
+    assert.equal(pads[0].buttons[0].pressed, true, 'i no ha perdut els seus botons');
+    assert.deepEqual([1, 2, 3].map(i => pads[i].id.slice(-8)), ['Remote 1', 'Remote 2', 'Remote 3']);
+    assert.deepEqual([1, 2, 3].map(i => pads[i].index), [1, 2, 3]);
+    assert.deepEqual(env.events.filter(e => e[0] === 'gamepadconnected' && e[1].includes('Remote')).map(e => e[2]), [1, 2, 3]);
+});
+
+test('mode jugadors: amb un mando físic a la ranura 0, l\'espectador no el trepitja', async () => {
+    const env = buildEnv(1, { 'relay.enabled': false, 'relay.viewerMode': 'players' });
+    const physical = { id: 'Xbox Wireless Controller (STANDARD GAMEPAD)', index: 0, connected: true, mapping: 'standard', timestamp: 5,
+        axes: [0, 0, 0, 0], buttons: new Array(17).fill(null).map(() => ({ pressed: false, touched: false, value: 0 })) };
+    physical.buttons[1] = { pressed: true, touched: true, value: 1 };
+    env.adapter.nativeGetGamepads = () => [physical, null, null, null];
+    navigator.getGamepads = env.adapter.patchedGetGamepads;
+
+    env.adapter.setRemoteInput(1, idle, noAxes);
+    const pads = navigator.getGamepads();
+    assert.equal(pads[0], physical, 'el mando físic és exactament el mateix objecte');
+    assert.equal(pads[1].id.endsWith('Remote 1'), true);
+});
+
+test('mode jugadors: sense cap mando a l\'amfitrió, el primer espectador és el jugador 2 (no el 1)', async () => {
+    const env = buildEnv(1, { 'relay.enabled': false, 'relay.viewerMode': 'players' });
+    env.adapter.setRemoteInput(1, idle, noAxes);
+    const pads = navigator.getGamepads();
+    assert.equal(pads[0], null);
+    assert.equal(pads[1].index, 1);
+});
+
+test('mode jugadors: si un mando físic ocupa la ranura d\'un espectador, aquest es mou sense tocar la 0', async () => {
+    const env = buildEnv(1, { 'relay.enabled': false, 'relay.viewerMode': 'players' });
+    env.adapter.setRemoteInput(1, idle, noAxes);                 // ranura 1
+    assert.equal(navigator.getGamepads()[1].id.endsWith('Remote 1'), true);
+
+    const physical = { id: 'Pad físic', index: 1, connected: true, mapping: 'standard', timestamp: 1,
+        axes: [0, 0, 0, 0], buttons: new Array(17).fill(null).map(() => ({ pressed: false, touched: false, value: 0 })) };
+    env.adapter.nativeGetGamepads = () => [null, physical, null, null];
+
+    const pads = navigator.getGamepads();
+    assert.equal(pads[1], physical);
+    assert.equal(pads[2].id.endsWith('Remote 1'), true, 'l\'espectador passa a la ranura 2');
+    assert.equal(pads[0], null);
+});
+
+test('reentrada: es neteja l\'estat antic i no queda cap mando repetit', async () => {
+    const env = buildEnv(1, { 'relay.enabled': false, 'relay.viewerMode': 'players' });
+    env.adapter.setVirtualActive(true);
+    env.adapter.setRemoteInput(1, idle, noAxes);
+    env.adapter.setRemoteInput(2, idle, noAxes);
+    assert.equal(connectedRemotes().length, 2);
+
+    env.events.length = 0;
+    env.adapter.removeRemote(1);                                 // l'espectador 1 marxa
+    assert.deepEqual(env.events.map(e => e[0]), ['gamepaddisconnected']);
+    assert.equal(connectedRemotes().length, 1);
+
+    env.events.length = 0;
+    env.adapter.setRemoteInput(1, idle, noAxes);                 // i torna a entrar
+    assert.deepEqual(env.events.map(e => [e[0], e[2]]), [['gamepadconnected', 1]], 'una sola connexió, a la ranura 1');
+    const remotes = connectedRemotes();
+    assert.equal(remotes.length, 2, 'exactament 2 espectadors, sense duplicats');
+    assert.equal(new Set(remotes.map(g => g.id)).size, 2);
+    assert.equal(navigator.getGamepads()[0].id, 'xCloud Català Pad', 'l\'amfitrió intacte');
+});
+
+test('espectador que torna a entrar des del mateix dispositiu: un sol mando virtual, i l\'amfitrió no el perd', async () => {
+    const relay = createRelay({ pin: '777777', discoveryPort: null });
+    const port = await relay.listen(0, '127.0.0.1');
+    const env = buildEnv(port, { 'relay.viewerMode': 'players' });
+    env.adapter.setVirtualActive(true);                          // amfitrió amb mando digital
+    env.RelayHost.getInstance().setup();
+    env.handlers['state.playing']();
+    await until(() => relay.hostConnected);
+
+    const origin = `http://127.0.0.1:${port}`;
+    const join = async () => {
+        const v = await connect(port, { role: 'viewer', origin });
+        v.sendJson({ type: 'join', pin: '777777', name: 'Mòbil', deviceId: 'dev-1' });
+        await v.json('joined');
+        v.sendBinary(frame({ 0: 255 }));
+        return v;
+    };
+
+    const first = await join();
+    await until(() => connectedRemotes().length === 1);
+
+    // El primer es "congela" (sense tancar res) i el mateix dispositiu torna a entrar
+    const second = await join();
+    await until(() => env.events.some(e => e[0] === 'gamepaddisconnected' && e[1].includes('Remote')));
+    await until(() => connectedRemotes().length === 1);
+    await sleep(100);
+
+    const remotes = connectedRemotes();
+    assert.equal(remotes.length, 1, 'un sol mando remot, no dos');
+    assert.equal(remotes[0].index, 1);
+    assert.equal(env.adapter.remotes.size, 1);
+    assert.equal(env.pcs.filter(p => !p.closed).length, 1, 'una sola connexió WebRTC activa');
+    assert.equal(navigator.getGamepads()[0].id, 'xCloud Català Pad');
+
+    env.handlers['state.stopped']();
+    await relay.close();
 });
