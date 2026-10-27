@@ -7,6 +7,9 @@
     "dist"
   ],
   "compilerOptions": {
+    // baseUrl està deprecat a TS 6 i desapareixerà a TS 7; es manté perquè els paths
+    // (@modules/*, @utils/*, …) encara en depenen. ignoreDeprecations silencia l'error.
+    "ignoreDeprecations": "6.0",
     "baseUrl": "./src",
     "paths": {
       "@/*": ["./*"],

@@ -9,17 +9,30 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: oven-sh/setup-bun@v2
       - run: bun install
       - run: bun build.ts --version 1.0.0 --variant full
+
       - uses: actions/setup-java@v4
-        with: { distribution: temurin, java-version: 17 }
+        with:
+          distribution: temurin
+          java-version: 17
+
+      # Google va deixar de servir el paquet "tools" (setembre 2026).
+      # setup-android@v3 l'instal·lava per defecte i fallava amb:
+      #   Failed to find package 'tools'
+      # Cal demanar només paquets que encara existeixen, o pujar a @v4.
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools platforms;android-34 build-tools;34.0.0
+
       - uses: gradle/actions/setup-gradle@v4
-        with: { gradle-version: 8.9 }
+
       - name: Compila l'APK (debug, instal·lable directament)
         working-directory: android
-        run: gradle assembleDebug --no-daemon
+        run: chmod +x gradlew && ./gradlew assembleDebug --no-daemon
+
       - uses: actions/upload-artifact@v4
         with:
           name: xcloud-catala-apk
