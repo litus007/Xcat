@@ -48,8 +48,8 @@ class RelayServer(
         private const val MAX_PAYLOAD = 64 * 1024
         private const val MAX_FAILURES = 5
         private const val LOCK_MS = 60_000L
-        private const val IDLE_TIMEOUT_MS = 30_000L           // amfitrió
-        private const val VIEWER_IDLE_TIMEOUT_MS = 15_000L    // espectadors: envien dades cada ~250 ms
+        private const val IDLE_TIMEOUT_MS = 45_000L           // amfitrió (ping cada 5 s + marge)
+        private const val VIEWER_IDLE_TIMEOUT_MS = 30_000L    // espectadors: 15 s era massa agressiu amb Wi-Fi irregular
         private const val SWEEP_MS = 5_000L
         private const val JOIN_TIMEOUT_MS = 5_000L
         private const val APPROVAL_TIMEOUT_MS = 30_000L

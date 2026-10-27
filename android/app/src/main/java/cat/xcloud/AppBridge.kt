@@ -44,10 +44,29 @@ class AppBridge(private val activity: MainActivity, private val webView: WebView
     })
 
     @JavascriptInterface
-    fun startRelayServer(): Int = relay.start(8787)
+    fun startRelayServer(): Int {
+        val port = relay.start(8787)
+        if (port > 0) {
+            try {
+                RelayService.start(activity)
+            } catch (_: Exception) {
+                // Sense permís de notificació o restricció del sistema: el relé continua
+            }
+        }
+        return port
+    }
 
     @JavascriptInterface
-    fun stopRelayServer() = relay.stop()
+    fun stopRelayServer() {
+        relay.stop()
+        try {
+            RelayService.stop(activity)
+        } catch (_: Exception) {
+        }
+    }
+
+    /** True mentre el relé està actiu (servei en primer pla o servidor en marxa). */
+    fun isRelayActive(): Boolean = RelayService.isRunning || relay.port > 0
 
     // Residu decimal dels desplaçaments relatius del ratolí
     private var remX = 0f
@@ -119,7 +138,14 @@ class AppBridge(private val activity: MainActivity, private val webView: WebView
         }
     }
 
-    fun destroy() { server.stop(); relay.stop() }
+    fun destroy() {
+        server.stop()
+        relay.stop()
+        try {
+            RelayService.stop(activity)
+        } catch (_: Exception) {
+        }
+    }
 
     // ---------------------------------------------------------------- Vibració
 

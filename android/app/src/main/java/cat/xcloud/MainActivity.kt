@@ -174,7 +174,23 @@ class MainActivity : AppCompatActivity() {
         bridge?.onCaptureChanged(hasCapture)
     }
 
-    override fun onPause() { super.onPause(); webView.onPause() }
-    override fun onResume() { super.onResume(); webView.onResume() }
-    override fun onDestroy() { bridge?.destroy(); webView.destroy(); super.onDestroy() }
+    override fun onPause() {
+        super.onPause()
+        // Si el relé està actiu no pausem el WebView: els timers JS, WebSocket i WebRTC
+        // s'han de mantenir vius perquè no es perdi la connexió amb els espectadors.
+        if (bridge?.isRelayActive() != true) {
+            webView.onPause()
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        webView.onResume()
+    }
+
+    override fun onDestroy() {
+        bridge?.destroy()
+        webView.destroy()
+        super.onDestroy()
+    }
 }

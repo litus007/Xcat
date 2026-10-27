@@ -37,7 +37,7 @@ Si un `deviceId` torna a entrar mentre el relé encara té viva una sessió ante
 La ranura 0 (jugador 1 de la consola) és sempre de l'amfitrió. Els espectadors ocupen les ranures 1, 2 i 3.
 
 ## Connexió viva
-El relé envia un ping WebSocket cada 5 s a tothom i tanca els espectadors que no responen en 15 s (l'amfitrió, en 30 s). Els navegadors responen sols amb un pong, així que l'amfitrió no es desconnecta encara que no enviï res. L'amfitrió, a més, envia un missatge `ping` cada 10 s.
+El relé envia un ping WebSocket cada 5 s a tothom i tanca els espectadors que no responen en 30 s (l'amfitrió, en 45 s). Els navegadors responen sols amb un pong, així que l'amfitrió no es desconnecta encara que no enviï res. L'amfitrió, a més, envia un missatge `ping` cada 10 s.
 
 ## Seguretat
 - Màxim 3 espectadors; fotogrames màxims de 64 KB.

@@ -129,6 +129,7 @@ const Texts = {
     "gamepad-adapter-input-detected": "Entrada detectada",
     "gamepad-adapter-learn": "Assigna els botons",
     "gamepad-adapter-learn-hint": "Prem el botó o mou la palanca que vols assignar. Pots ometre'l.",
+    "gamepad-adapter-learning-pause-remotes": "Multijugador en pausa mentre assignes el mando",
     "gamepad-adapter-manage": "Assigna els botons del mando",
     "gamepad-adapter-no-gamepad": "Connecta un mando i prem qualsevol botó perquè es detecti",
     "gamepad-adapter-profile": "Perfil del mando",

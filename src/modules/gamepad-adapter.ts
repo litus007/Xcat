@@ -298,6 +298,16 @@ export class GamepadAdapter {
         learning ? this.learningKeys.add(key) : this.learningKeys.delete(key);
     }
 
+    /** True mentre l'assistent d'assignació està obert (qualsevol mando). */
+    isLearning(): boolean {
+        return this.learningKeys.size > 0;
+    }
+
+    /** Nombre d'espectadors amb mando actiu. */
+    remoteCount(): number {
+        return this.remotes.size;
+    }
+
     // ---------------------------------------------------------------- Lectura del mando físic
 
     /** Mandos físics, sense adaptar (per a l'assistent d'assignació). */
@@ -348,7 +358,11 @@ export class GamepadAdapter {
         this.refreshConfig();
 
         const virtualOn = this.virtual.active;
-        const remoteOn = this.remotes.size > 0;
+        // Mentre l'assistent d'assignació està obert, no injectem mandos remots ni
+        // reassignem ranures: evita confondre la lectura del mando físic i els events
+        // gamepadconnected/disconnected de xCloud.
+        const learning = this.isLearning();
+        const remoteOn = !learning && this.remotes.size > 0;
         if ((!this.config.enabled && !virtualOn && !remoteOn) || !list) {
             return list;
         }
@@ -368,7 +382,7 @@ export class GamepadAdapter {
         // Fonts compartides: mando digital + espectadors (mode "comparteixen el jugador 1")
         const sources: Array<{ buttons: number[]; axes: number[] }> = [];
         virtualOn && sources.push(this.virtual);
-        if (this.config.remoteMode !== 'players') {
+        if (remoteOn && this.config.remoteMode !== 'players') {
             sources.push(...this.activeRemoteStates());
         }
 

@@ -59,6 +59,12 @@ export class GamepadAdapterDialog {
             return;
         }
 
+        // Amb espectadors connectats, l'assistent aïlla els mandos remots (vegeu isLearning).
+        // Avise'm perquè l'usuari sàpiga que el multijugador queda en pausa mentre mapeja.
+        if (adapter.remoteCount() > 0) {
+            Toast.show(t('gamepad-adapter-learning-pause-remotes'), '🎮', { instant: true });
+        }
+
         GamepadAdapterDialog.current = new GamepadAdapterDialog(gamepads[0]!.index);
     }
 

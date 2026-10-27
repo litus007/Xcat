@@ -2,4 +2,8 @@
     <string name="app_name">xCloud Català</string>
     <string name="mic_denied">Sense permís de micròfon, el xat de veu no funcionarà</string>
     <string name="script_missing">No s\'ha trobat l\'script. Compila\'l abans (bun build.ts) i torna a construir l\'app.</string>
+    <string name="relay_channel_name">Repetidor local</string>
+    <string name="relay_channel_desc">Manté la connexió amb altres dispositius de la xarxa local</string>
+    <string name="relay_notification_title">Repetidor actiu</string>
+    <string name="relay_notification_text">Compartint la partida a la xarxa local</string>
 </resources>

@@ -99,10 +99,12 @@ No cal cap programa: el relé va dins de l'app. A la pantalla d'inici tria *Juga
 
 ### Si no va
 - *L'amfitrió es desconnecta cada mig minut:* ja està corregit (el relé envia pings i l'amfitrió un batec). Si passa, mira que no tinguis una versió antiga del relé en marxa.
+- *Es perd la connexió amb els espectadors a l'app d'Android:* l'app manté un servei en primer pla (notificació «Repetidor actiu») i no pausa el WebView mentre el relé està engegat. Si Android mata el procés igualment, desactiva les optimitzacions de bateria per a xCloud Català. Els timeouts d'idle són 30 s (espectadors) i 45 s (amfitrió).
 - *Es veu però no se sent:* a l'espectador apareix un avís si l'àudio no arriba o arriba en silenci. Comprova que el joc té volum a l'amfitrió.
 - *No apareixen partides a l'app:* han d'estar a la mateixa Wi-Fi (sense «aïllament de clients») i el tallafoc ha de permetre UDP 8788; sempre pots escriure l'adreça.
 - *Un espectador surt repetit o es veu gris en tornar a entrar:* un dispositiu només pot tenir una sessió; si torna a entrar, substitueix l'antiga. Si el vídeo no arrenca amb so, es reprodueix mut i apareix un botó 🔊.
 - *Els mandos no fan res:* a la píndola de l'amfitrió, 🎮 indica quants espectadors estan enviant dades. Si és 0, el problema és a l'espectador (permisos del navegador, vegeu dalt).
+- *Assignar botons amb espectadors connectats:* l'assistent posa el multijugador en pausa mentre mapeja el mando i el reactiva en tancar.
 
 ### Limitacions
 - L'amfitrió ha de tornar a codificar el vídeo per cada espectador: gasta CPU i bateria i afegeix una mica de latència. Al PC va bé; al mòbil, millor amb un o dos espectadors.
@@ -115,6 +117,7 @@ No cal cap programa: el relé va dins de l'app. A la pantalla d'inici tria *Juga
 1. Connecta el mando al dispositiu i prem-hi qualsevol botó.
 2. Obre **Configuració → Mando → Adaptador de mandos** i activa'l.
 3. Si els botons no coincideixen, prem **Assigna els botons del mando** i segueix l'assistent.
+4. Si hi ha espectadors connectats, el multijugador es posa en pausa mentre assignes els botons (per no barrejar entrades) i es recupera en acabar.
 
 ## Personalitzacions locals
 

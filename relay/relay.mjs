@@ -54,8 +54,8 @@ export function createRelay(options = {}) {
         log = () => {},
         urlsProvider = lanUrls,
         joinTimeoutMs = 5000,
-        idleTimeoutMs = 30000,          // amfitrió
-        viewerIdleTimeoutMs = 15000,    // espectadors: envien dades cada ~250 ms, així es detecten abans els morts
+        idleTimeoutMs = 45000,          // amfitrió (ping cada 5 s + marge)
+        viewerIdleTimeoutMs = 30000,    // espectadors: 15 s era massa agressiu amb Wi-Fi irregular / pestanya en segon pla
         sweepMs = 5000,
         maxFailures = 5,
         lockMs = 60000,
